@@ -22,6 +22,7 @@ from .services.errors import LoginRequiredError, UserVisibleError
 from .services.rate_limit import FACEBOOK_GRAPHQL_DAILY_LIMIT, local_usage_date
 from .services.scraper import facebook_logged_in, login_check_driver
 from .services.sheets import clear_google_oauth, extract_spreadsheet_id, google_auth_status, run_google_oauth
+from .services.update_checker import check_for_update
 
 
 WHISPER_LANGUAGE_OPTIONS = [
@@ -339,6 +340,24 @@ def create_app():
     @app.route("/environment")
     def environment():
         return render_template("environment.html")
+
+    @app.route("/updates")
+    def updates():
+        return render_template("updates.html")
+
+    @app.route("/api/update-check")
+    def api_update_check():
+        try:
+            force = request.args.get("force") == "1"
+            return jsonify(check_for_update(force=force))
+        except Exception as exc:
+            return jsonify(
+                {
+                    "ok": False,
+                    "current_version": APP_VERSION,
+                    "error": f"检查更新失败：{exc}",
+                }
+            ), 502
 
     @app.route("/environment/data")
     def environment_data():

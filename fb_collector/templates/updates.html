@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card shadow-sm">
+  <div class="card-body">
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-4">
+      <div>
+        <h1 class="h3 mb-1">检查更新</h1>
+        <div class="text-secondary">当前版本：v{{ app_version }}</div>
+      </div>
+      <button class="btn btn-primary" id="check-update" type="button">重新检查</button>
+    </div>
+
+    <div id="update-loading" class="py-5 text-center">
+      <div class="spinner-border text-primary mb-3" role="status" aria-hidden="true"></div>
+      <div class="fw-semibold">正在连接 GitHub 检查新版本...</div>
+    </div>
+    <div id="update-error" class="alert alert-danger d-none" role="alert"></div>
+    <div id="update-result" class="d-none">
+      <div id="update-summary" class="alert"></div>
+      <dl class="row mb-3">
+        <dt class="col-sm-3">当前版本</dt><dd class="col-sm-9" id="current-version"></dd>
+        <dt class="col-sm-3">最新版本</dt><dd class="col-sm-9" id="latest-version"></dd>
+        <dt class="col-sm-3">发布时间</dt><dd class="col-sm-9" id="published-at"></dd>
+      </dl>
+      <div class="d-flex flex-wrap gap-2 mb-4" id="download-assets"></div>
+      <h2 class="h5">更新说明</h2>
+      <pre class="bg-light border rounded p-3 text-wrap" id="release-notes"></pre>
+    </div>
+  </div>
+</section>
+
+<script>
+const checkButton = document.querySelector("#check-update");
+const loading = document.querySelector("#update-loading");
+const result = document.querySelector("#update-result");
+const errorBox = document.querySelector("#update-error");
+
+function formatSize(bytes) {
+  const size = Number(bytes || 0);
+  return size ? `${(size / 1024 / 1024).toFixed(1)} MB` : "";
+}
+
+async function checkUpdate(force = false) {
+  loading.classList.remove("d-none");
+  result.classList.add("d-none");
+  errorBox.classList.add("d-none");
+  checkButton.disabled = true;
+  try {
+    const response = await fetch(`{{ url_for('api_update_check') }}${force ? "?force=1" : ""}`, { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "检查更新失败");
+    document.querySelector("#current-version").textContent = `v${data.current_version}`;
+    document.querySelector("#latest-version").textContent = `v${data.latest_version}`;
+    document.querySelector("#published-at").textContent = data.published_at || "";
+    document.querySelector("#release-notes").textContent = data.release_notes || "暂无更新说明";
+    const summary = document.querySelector("#update-summary");
+    summary.className = `alert ${data.update_available ? "alert-warning" : "alert-success"}`;
+    summary.textContent = data.update_available ? `发现新版本 v${data.latest_version}` : "当前已经是最新版本";
+    const downloads = document.querySelector("#download-assets");
+    downloads.replaceChildren();
+    (data.assets || []).forEach((asset) => {
+      const link = document.createElement("a");
+      link.className = asset.kind === "EXE" ? "btn btn-success" : "btn btn-outline-success";
+      link.href = asset.url;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = `下载 ${asset.kind} 安装包 ${formatSize(asset.size)}`;
+      downloads.appendChild(link);
+    });
+    const releaseLink = document.createElement("a");
+    releaseLink.className = "btn btn-outline-primary";
+    releaseLink.href = data.release_url;
+    releaseLink.target = "_blank";
+    releaseLink.rel = "noopener";
+    releaseLink.textContent = "查看 GitHub Release";
+    downloads.appendChild(releaseLink);
+    result.classList.remove("d-none");
+  } catch (error) {
+    errorBox.textContent = error.message || "检查更新失败，请确认网络连接。";
+    errorBox.classList.remove("d-none");
+  } finally {
+    loading.classList.add("d-none");
+    checkButton.disabled = false;
+  }
+}
+
+checkButton.addEventListener("click", () => checkUpdate(true));
+checkUpdate(false);
+</script>
+{% endblock %}

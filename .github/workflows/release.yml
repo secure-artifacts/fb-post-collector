@@ -35,18 +35,45 @@ jobs:
       - name: Build executable
         run: pyinstaller --noconfirm FBPostCollector.spec
 
+      - name: Verify release version
+        shell: pwsh
+        run: |
+          $version = python -c "from fb_collector.config import APP_VERSION; print(APP_VERSION)"
+          if ("v$version" -ne "${{ github.ref_name }}") {
+            throw "Tag ${{ github.ref_name }} does not match application version v$version"
+          }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installers
+        shell: pwsh
+        run: |
+          iscc FBPostCollector.iss
+          python build_msi.py --source dist/FBPostCollector --output "dist/FBPostCollector-Setup-${{ github.ref_name }}.msi"
+
       - name: Package zip
         shell: pwsh
         run: |
           Compress-Archive -Path dist/FBPostCollector -DestinationPath "FBPostCollector-${{ github.ref_name }}-windows.zip"
 
+      - name: Stage release assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item "FBPostCollector-${{ github.ref_name }}-windows.zip" release/
+          Copy-Item "installer_output/FBPostCollector-Setup-${{ github.ref_name }}.exe" release/
+          Copy-Item "dist/FBPostCollector-Setup-${{ github.ref_name }}.msi" release/
+
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
-          subject-path: "FBPostCollector-*.zip"
+          subject-path: "release/*"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: FBPostCollector-*.zip
+          files: "release/*"
+          fail_on_unmatched_files: true
           generate_release_notes: true
