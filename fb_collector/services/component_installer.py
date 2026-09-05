@@ -202,7 +202,7 @@ def download_file(url, dest):
 
 def install_tesseract():
     notes = []
-    tools = detect_tools()
+    tools = detect_tools(force=True)
     if not tools["tesseract"]["available"]:
         command = install_command("tesseract")
         completed = run_command(command)
@@ -215,7 +215,7 @@ def install_tesseract():
                 "returncode": completed.returncode,
                 "output": "\n".join(part for part in notes if part),
             }
-        tools = detect_tools()
+        tools = detect_tools(force=True)
     tessdata = writable_tessdata_dir(tools["tesseract"].get("path") or "")
     missing = [lang for lang in TESSERACT_LANGS if not tools["tesseract"].get(lang)]
     for lang in missing:
@@ -224,7 +224,7 @@ def install_tesseract():
             continue
         download_file(TESSDATA_URLS[lang], dest)
         notes.append(f"已下载语言包 {lang}")
-    tools = detect_tools()
+    tools = detect_tools(force=True)
     complete = tools["tesseract"]["available"] and all(tools["tesseract"].get(lang) for lang in TESSERACT_LANGS)
     return {
         "component": "tesseract",
@@ -254,7 +254,7 @@ def install_yt_dlp():
                 "returncode": completed.returncode,
                 "output": "\n".join(part for part in notes if part),
             }
-    tools = detect_tools()
+    tools = detect_tools(force=True)
     success = bool(tools["yt_dlp"].get("available") or dest.exists())
     return {
         "component": "yt_dlp",

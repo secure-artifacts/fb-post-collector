@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 import webbrowser
@@ -279,6 +280,8 @@ def create_app():
 
     @app.route("/projects/<int:project_id>/run", methods=["POST"])
     def project_run(project_id):
+        if request.form.get("from_start") == "1":
+            db.set_resume_row(project_id, 0)
         run_id = db.create_task_run(project_id, None)
         thread = threading.Thread(
             target=run_project,
@@ -316,6 +319,14 @@ def create_app():
     @app.route("/runs/<int:run_id>")
     def run_detail(run_id):
         return render_template("run_detail.html", rows=db.list_row_runs(run_id), run_id=run_id, run=db.get_run(run_id))
+
+    @app.route("/runs/clear-failed", methods=["POST"])
+    def runs_clear_failed():
+        deleted = db.delete_failed_runs()
+        if wants_json():
+            return jsonify({"deleted": deleted})
+        flash(f"已清空 {deleted} 条失败运行记录。", "success")
+        return redirect(url_for("runs"))
 
     @app.route("/runs/<int:run_id>/stop", methods=["POST"])
     def run_stop(run_id):
@@ -671,41 +682,29 @@ def normalize_non_negative_int(value):
 
 
 def main():
-    from .tray import already_running, port_in_use, run_tray
+    from .tray import _log, ensure_port_free, http_alive, pick_port, start_desktop_shell
 
     host = "127.0.0.1"
-    port = 5088
+    _log(f"main start frozen={getattr(sys, 'frozen', False)} pid={os.getpid()}")
+    port, existing = pick_port(host, 5199)
     url = f"http://{host}:{port}"
-    if already_running() or port_in_use(host, port):
+    _log(f"picked port={port} existing={existing}")
+    if existing or http_alive(url + "/api/ping"):
+        _log(f"already running, open {url}")
         webbrowser.open(url)
         return
+    ensure_port_free(host, port)
+    _log(f"port ready {port}")
 
     app = create_app()
     scheduler = SchedulerThread(interval=30)
     scheduler.start()
-    server_ready = threading.Event()
-
-    def serve():
-        server_ready.set()
-        try:
-            app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
-        finally:
-            scheduler.stop()
-
-    server_thread = threading.Thread(target=serve, name="fb-collector-server", daemon=True)
-    server_thread.start()
-    server_ready.wait(timeout=5)
-    for _ in range(20):
-        if port_in_use(host, port):
-            break
-        time.sleep(0.2)
-    webbrowser.open(url)
 
     def quit_app():
         scheduler.stop()
         os._exit(0)
 
-    try:
-        run_tray(url, quit_app)
-    except Exception:
-        server_thread.join()
+    def start_server():
+        app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
+
+    start_desktop_shell(url, start_server, quit_app)

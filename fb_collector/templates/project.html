@@ -102,9 +102,18 @@
           </div>
         </div>
         <div class="col-12">
-          <div class="alert alert-secondary py-2 small mb-0">
+          <div class="alert alert-secondary py-2 small mb-2">
             下次执行顺序：先看抓取日志列，有记录直接跳过；没有记录再看写入开始列，有数据也跳过；两列都空才抓取。选择“覆盖重抓”时不跳过。
           </div>
+          {% if project.resume_after_row %}
+          <div class="alert alert-info py-2 small mb-0">
+            断点：上次已处理到第 <strong>{{ project.resume_after_row }}</strong> 行，下次默认从第 <strong>{{ project.resume_after_row + 1 }}</strong> 行继续。整表跑完后会自动清零，也可以点“从头再跑”。
+          </div>
+          {% else %}
+          <div class="alert alert-light py-2 small mb-0">
+            断点：当前没有未完成进度，下次从数据开始行执行。中途停止后会记住行号，下次从下一行继续。
+          </div>
+          {% endif %}
         </div>
       </div>
     </div>

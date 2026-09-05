@@ -2,7 +2,7 @@
 
 本项目是一个本地采集工具。启动后会打开本地网页面板，用“项目 + 任务”的方式配置 Facebook 贴文链接采集、Google Sheets 写回、字段排序、环境检测和运行历史。
 
-当前版本：`v1.3.0`
+当前版本：`v1.3.3`
 
 ## 下载安装
 
@@ -18,7 +18,7 @@
 验证构建来源：
 
 ```powershell
-gh attestation verify FBPostCollector-v1.3.0-windows.zip --owner secure-artifacts
+gh attestation verify FBPostCollector-v1.3.3-windows.zip --owner secure-artifacts
 ```
 
 ## 启动

@@ -53,6 +53,7 @@ def init_db():
                 ocr_languages TEXT NOT NULL DEFAULT 'por',
                 whisper_language TEXT NOT NULL DEFAULT '',
                 audio_min_like_count INTEGER NOT NULL DEFAULT 0,
+                resume_after_row INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(browser_account_id) REFERENCES browser_accounts(id) ON DELETE SET NULL
@@ -155,6 +156,7 @@ def init_db():
         ensure_column(conn, "projects", "audio_min_like_count", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "projects", "processed_log_column", "TEXT NOT NULL DEFAULT 'AK'")
         ensure_column(conn, "projects", "skip_existing_write_data", "INTEGER NOT NULL DEFAULT 1")
+        ensure_column(conn, "projects", "resume_after_row", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "project_fields", "write_column", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "browser_accounts", "debug_enabled", "INTEGER NOT NULL DEFAULT 0")
         ensure_missing_project_fields(conn)
@@ -336,6 +338,7 @@ def update_project(project_id, data):
         "ocr_languages",
         "whisper_language",
         "audio_min_like_count",
+        "resume_after_row",
     ]
     cols = [key for key in allowed if key in data]
     if not cols:
@@ -370,6 +373,25 @@ def update_project_fields(project_id, fields):
 def delete_project(project_id):
     with connect() as conn:
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+
+
+def set_resume_row(project_id, row_number):
+    with connect() as conn:
+        conn.execute(
+            "UPDATE projects SET resume_after_row = ?, updated_at = ? WHERE id = ?",
+            (max(0, int(row_number or 0)), utc_now(), project_id),
+        )
+
+
+def delete_failed_runs():
+    with connect() as conn:
+        cur = conn.execute(
+            """
+            DELETE FROM task_runs
+            WHERE status IN ('failed', 'finished_with_errors')
+            """
+        )
+        return cur.rowcount or 0
 
 
 def list_browser_accounts():

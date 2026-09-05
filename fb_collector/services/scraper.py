@@ -1,7 +1,6 @@
 import re
 import json
 import shutil
-import subprocess
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -21,6 +20,7 @@ from .browser_profiles import (
     chrome_executable,
     chrome_using_profile,
     clear_stale_profile_locks,
+    close_profile_chrome,
     debug_port_alive,
     profile_lock_files,
     read_devtools_port,
@@ -58,6 +58,7 @@ from .facebook_graphql import (
 )
 from .gyazo import upload_file
 from .ocr import ocr_image
+from .proc import run_hidden
 from .rate_limit import record_facebook_graphql_request, wait_for_facebook_graphql_slot
 from .translator import translate_to_chinese_detail
 
@@ -235,53 +236,13 @@ def project_user_data_dir(project):
     return account_dir
 
 
-def make_driver(project, visible=False):
-    options = Options()
-    options.add_argument("--disable-notifications")
-    options.add_argument("--lang=en-US")
-    options.add_argument("--no-first-run")
-    options.add_argument("--no-default-browser-check")
-    options.add_argument("--disable-popup-blocking")
-    options.add_argument("--remote-debugging-port=0")
-    if not visible and not debug_enabled(project):
-        options.add_argument("--headless=new")
-        options.add_argument("--window-size=1365,1600")
-
-    user_data_dir = project_user_data_dir(project)
-    path = Path(user_data_dir)
-    path.mkdir(parents=True, exist_ok=True)
-    ensure_profile_not_locked(path)
-    options.add_argument(f"--user-data-dir={path}")
-    options.add_argument("--remote-allow-origins=*")
-    chrome_path = chrome_executable()
-    if chrome_path and Path(chrome_path).exists():
-        options.binary_location = chrome_path
-
-    try:
-        driver = webdriver.Chrome(options=options)
-        driver.set_page_load_timeout(60)
-        return driver
-    except WebDriverException as exc:
-        message = str(exc)
-        hint = (
-            "浏览器启动失败。请关闭这个抓取账号的专用 Chrome 窗口后重试，"
-            "或者到“浏览器账号”页面重新打开并登录该账号。"
-        )
-        if "DevToolsActivePort" in message or "session not created" in message or "user data directory is already in use" in message:
-            raise BrowserStartError(hint, f"Cannot start Chrome driver: {message}") from exc
-        raise BrowserStartError("浏览器启动失败", f"Cannot start Chrome driver: {message}") from exc
-
-
-def ensure_profile_not_locked(user_data_dir: Path):
-    path = Path(user_data_dir)
-    if not profile_lock_files(path):
-        return
-    if chrome_using_profile(path):
-        raise BrowserStartError(
-            "这个账号的专用 Chrome 还开着。请先关掉该窗口，或直接点“检测登录”（会连接已打开的窗口）。",
-            f"Chrome user data directory is in use: {user_data_dir}",
-        )
-    clear_stale_profile_locks(path)
+def project_account(project):
+    account = dict(project.get("browser_account") or {})
+    if not account.get("id") and project.get("browser_account_id"):
+        account["id"] = project["browser_account_id"]
+    if not account.get("user_data_dir"):
+        account["user_data_dir"] = project.get("browser_account", {}).get("user_data_dir") or ""
+    return account
 
 
 def attach_chrome_driver(port):
@@ -292,7 +253,87 @@ def attach_chrome_driver(port):
         options.binary_location = chrome_path
     driver = webdriver.Chrome(options=options)
     driver.set_page_load_timeout(60)
+    driver._fb_attached = True
     return driver
+
+
+def attach_existing_driver(account):
+    user_data_dir = Path(account.get("user_data_dir") or "")
+    ports = []
+    if account.get("id") is not None:
+        ports.append(account_debug_port(account["id"]))
+    if user_data_dir:
+        ports.append(read_devtools_port(user_data_dir))
+    seen = set()
+    for port in ports:
+        if not port or port in seen:
+            continue
+        seen.add(port)
+        if not debug_port_alive(port):
+            continue
+        try:
+            return attach_chrome_driver(port)
+        except WebDriverException:
+            continue
+    return None
+
+
+def close_driver(driver):
+    if not driver or getattr(driver, "_fb_attached", False):
+        return
+    try:
+        driver.quit()
+    except Exception:
+        pass
+
+
+def make_driver(project, visible=False):
+    account = project_account(project)
+    user_data_dir = project_user_data_dir(project)
+    path = Path(user_data_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    attached = attach_existing_driver(account)
+    if attached:
+        return attached
+
+    if chrome_using_profile(path):
+        close_profile_chrome(path)
+    else:
+        clear_stale_profile_locks(path)
+
+    options = Options()
+    options.add_argument("--disable-notifications")
+    options.add_argument("--lang=en-US")
+    options.add_argument("--no-first-run")
+    options.add_argument("--no-default-browser-check")
+    options.add_argument("--disable-popup-blocking")
+    debug_port = account_debug_port(account["id"]) if account.get("id") is not None else 0
+    options.add_argument(f"--remote-debugging-port={debug_port}")
+    if not visible and not debug_enabled(project):
+        options.add_argument("--headless=new")
+        options.add_argument("--window-size=1365,1600")
+
+    options.add_argument(f"--user-data-dir={path}")
+    options.add_argument("--remote-allow-origins=*")
+    chrome_path = chrome_executable()
+    if chrome_path and Path(chrome_path).exists():
+        options.binary_location = chrome_path
+
+    try:
+        driver = webdriver.Chrome(options=options)
+        driver.set_page_load_timeout(60)
+        driver._fb_attached = False
+        return driver
+    except WebDriverException as exc:
+        message = str(exc)
+        if chrome_using_profile(path):
+            close_profile_chrome(path)
+        hint = (
+            "浏览器启动失败。请到“浏览器账号”重新点“打开登录”，登录后不用关窗口，再重新运行。"
+        )
+        if "DevToolsActivePort" in message or "session not created" in message or "user data directory is already in use" in message:
+            raise BrowserStartError(hint, f"Cannot start Chrome driver: {message}") from exc
+        raise BrowserStartError("浏览器启动失败", f"Cannot start Chrome driver: {message}") from exc
 
 
 def login_check_driver(account):
@@ -300,17 +341,9 @@ def login_check_driver(account):
     if not user_data_dir:
         raise BrowserStartError("请先选择抓取浏览器账号", "Missing user_data_dir")
     user_data_dir.mkdir(parents=True, exist_ok=True)
-    ports = []
-    for candidate in (account_debug_port(account["id"]), read_devtools_port(user_data_dir)):
-        if candidate and candidate not in ports:
-            ports.append(candidate)
-    for port in ports:
-        if not debug_port_alive(port):
-            continue
-        try:
-            return attach_chrome_driver(port), True
-        except WebDriverException:
-            continue
+    attached = attach_existing_driver(account)
+    if attached:
+        return attached, True
     if chrome_using_profile(user_data_dir):
         raise BrowserStartError(
             "这个账号的登录窗口还开着，但还不能直接检测。请先关闭该 Chrome 窗口，再点一次“打开登录”，登录后不用关窗口，直接点“检测登录”。",
@@ -319,6 +352,21 @@ def login_check_driver(account):
     clear_stale_profile_locks(user_data_dir)
     project = {"browser_account": account, "browser_account_id": account["id"]}
     return make_driver(project, visible=True), False
+
+
+def ensure_logged_in(driver):
+    if facebook_logged_in(driver):
+        return
+    try:
+        driver.get("https://www.facebook.com/")
+        time.sleep(2)
+    except Exception:
+        pass
+    if facebook_logged_in(driver):
+        return
+    raise LoginRequiredError(
+        "这个抓取账号还没登录 Facebook。请到「浏览器账号」点「打开登录」，在弹出的 Chrome 里登录。登录完成后不用关窗口，再重新运行抓取。"
+    )
 
 
 def facebook_logged_in(driver):
@@ -345,7 +393,9 @@ def facebook_logged_in(driver):
 def page_state(url, title, html):
     haystack = f"{url}\n{title}\n{html[:50000]}".lower()
     if "login" in url.lower() or "log in to facebook" in haystack or "登录 facebook" in haystack:
-        raise LoginRequiredError()
+        raise LoginRequiredError(
+            "这个抓取账号还没登录 Facebook。请到「浏览器账号」点「打开登录」，在弹出的 Chrome 里登录。登录完成后不用关窗口，再重新运行抓取。"
+        )
     if "checkpoint" in url.lower() or "security check" in haystack or "captcha" in haystack:
         raise VerificationRequiredError()
     unavailable = [
@@ -441,7 +491,7 @@ def capture_video_frame(video_path):
         return None
     frame_path = Path(tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name)
     try:
-        subprocess.run(
+        run_hidden(
             [
                 ffmpeg["path"],
                 "-y",
@@ -684,6 +734,7 @@ class FacebookScraper:
         raw = {}
         try:
             driver = make_driver(project)
+            ensure_logged_in(driver)
             driver.get(url)
             time.sleep(5)
             html = driver.page_source or ""
@@ -762,11 +813,7 @@ class FacebookScraper:
                 "raw": raw,
             }
         finally:
-            if driver:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
+            close_driver(driver)
 
     def enrich_prefetched(self, values, post_url, driver, project):
         started_at = now_text()
@@ -1008,7 +1055,7 @@ class FacebookScraper:
         values["yt_dlp_error"] = f"path={values.get('yt_dlp_path', '')}; version={values.get('yt_dlp_version', '')}; " + " | ".join(errors)
 
     def ytdlp_info(self, executable, url, cookie_path):
-        proc = subprocess.run(
+        proc = run_hidden(
             [executable, "--cookies", str(cookie_path), "--dump-single-json", "--no-playlist", url],
             capture_output=True,
             text=True,
@@ -1056,7 +1103,7 @@ class FacebookScraper:
         ]
         errors = []
         for cmd in commands:
-            proc = subprocess.run(
+            proc = run_hidden(
                 cmd,
                 capture_output=True,
                 text=True,

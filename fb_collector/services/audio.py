@@ -1,5 +1,4 @@
 import os
-import subprocess
 import time
 import shutil
 from pathlib import Path
@@ -7,6 +6,7 @@ from pathlib import Path
 from ..config import DATA_DIR, TEMP_DIR
 from .environment import detect_tools
 from .errors import AudioError
+from .proc import run_hidden
 
 
 AUDIO_ERROR = "\u97f3\u9891\u8bc6\u522b\u5931\u8d25"
@@ -80,7 +80,7 @@ def transcribe_video(video_path, language="", debug=False):
     txt_path = TEMP_DIR / f"{audio.stem}.txt"
 
     try:
-        ffmpeg_proc = subprocess.run(
+        ffmpeg_proc = run_hidden(
             [tools["ffmpeg"]["path"], "-y", "-i", str(video), str(audio)],
             capture_output=True,
             text=True,
@@ -106,7 +106,7 @@ def transcribe_video(video_path, language="", debug=False):
         env = os.environ.copy()
         env.setdefault("PYTHONIOENCODING", "utf-8")
         started_at = time.time()
-        whisper_proc = subprocess.run(
+        whisper_proc = run_hidden(
             cmd,
             capture_output=True,
             text=True,

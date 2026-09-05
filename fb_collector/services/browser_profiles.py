@@ -3,11 +3,12 @@ import os
 import base64
 import mimetypes
 import shutil
-import subprocess
+import time
 import urllib.request
 from pathlib import Path
 
 from ..config import DATA_DIR
+from .proc import run_hidden
 
 
 def _read_local_state(user_data: Path) -> dict:
@@ -94,36 +95,66 @@ def read_devtools_port(user_data_dir):
 
 
 def chrome_using_profile(user_data_dir):
-    needle = str(Path(user_data_dir)).lower()
-    if not needle:
-        return False
-    for line in chrome_command_lines():
-        lowered = line.lower()
-        if "--user-data-dir" in lowered and needle in lowered:
-            return True
-    return False
+    return bool(chrome_pids_using_profile(user_data_dir))
 
 
-def chrome_command_lines():
+def chrome_process_rows():
     if os.name != "nt":
         return []
-    creationflags = subprocess.CREATE_NO_WINDOW
     try:
-        completed = subprocess.run(
+        completed = run_hidden(
             [
                 "powershell",
                 "-NoProfile",
                 "-Command",
-                "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | ForEach-Object { $_.CommandLine }",
+                "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | ForEach-Object { '{0}`t{1}' -f $_.ProcessId, $_.CommandLine }",
             ],
             capture_output=True,
             text=True,
             timeout=8,
-            creationflags=creationflags,
+            encoding="utf-8",
+            errors="replace",
         )
     except Exception:
         return []
-    return [line.strip() for line in (completed.stdout or "").splitlines() if line.strip()]
+    rows = []
+    for line in (completed.stdout or "").splitlines():
+        line = line.strip()
+        if "\t" not in line:
+            continue
+        pid_text, command = line.split("\t", 1)
+        if pid_text.isdigit() and command.strip():
+            rows.append((int(pid_text), command.strip()))
+    return rows
+
+
+def chrome_command_lines():
+    return [command for _, command in chrome_process_rows()]
+
+
+def chrome_pids_using_profile(user_data_dir):
+    needle = str(Path(user_data_dir)).lower()
+    if not needle:
+        return []
+    pids = []
+    for pid, command in chrome_process_rows():
+        lowered = command.lower()
+        if "--user-data-dir" in lowered and needle in lowered:
+            pids.append(pid)
+    return pids
+
+
+def close_profile_chrome(user_data_dir):
+    me = os.getpid()
+    for pid in chrome_pids_using_profile(user_data_dir):
+        if pid == me:
+            continue
+        try:
+            run_hidden(["taskkill", "/F", "/PID", str(pid), "/T"], capture_output=True, timeout=8)
+        except Exception:
+            pass
+    time.sleep(0.6)
+    clear_profile_locks(user_data_dir)
 
 
 def profile_lock_files(user_data_dir):

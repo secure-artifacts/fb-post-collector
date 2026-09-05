@@ -1,10 +1,14 @@
 import os
 import shutil
-import subprocess
+import time
 from pathlib import Path
 
 from ..config import BASE_DIR, DATA_DIR, TOOLS_DIR
 from .browser_profiles import chrome_executable
+from .proc import run_hidden
+
+_TOOLS_CACHE = {"at": 0, "value": None}
+_TOOLS_CACHE_SECONDS = 60
 
 USER_TOOLS_DIR = DATA_DIR / "tools"
 TESSERACT_LANGS = ("eng", "por", "ara", "chi_sim")
@@ -24,7 +28,7 @@ def command_available(command):
         return {"available": False, "path": "", "version": ""}
     version = ""
     try:
-        proc = subprocess.run([found, "--version"], capture_output=True, text=True, timeout=5)
+        proc = run_hidden([found, "--version"], capture_output=True, text=True, timeout=5)
         version = (proc.stdout or proc.stderr).splitlines()[0] if (proc.stdout or proc.stderr) else ""
     except Exception:
         version = "已找到，但版本检测失败"
@@ -56,7 +60,17 @@ def lang_available(directories, lang):
     return any((Path(directory) / f"{lang}.traineddata").exists() for directory in directories)
 
 
-def detect_tools():
+def detect_tools(force=False):
+    now = time.time()
+    if not force and _TOOLS_CACHE["value"] is not None and now - _TOOLS_CACHE["at"] < _TOOLS_CACHE_SECONDS:
+        return _TOOLS_CACHE["value"]
+    result = _detect_tools()
+    _TOOLS_CACHE["at"] = now
+    _TOOLS_CACHE["value"] = result
+    return result
+
+
+def _detect_tools():
     winget_links = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links"
     local_programs = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs"
     tesseract_path = first_existing(

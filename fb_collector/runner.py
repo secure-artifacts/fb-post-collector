@@ -10,7 +10,7 @@ from . import db
 from .fields import FIELD_LABELS, assign_default_write_columns, field_write_pairs, normalize_column
 from .services.errors import InvalidLinkError, UserVisibleError
 from .services.rate_limit import FACEBOOK_GRAPHQL_DAILY_LIMIT, local_usage_date
-from .services.scraper import FacebookScraper, make_driver, now_text, page_state
+from .services.scraper import FacebookScraper, close_driver, ensure_logged_in, make_driver, now_text, page_state
 from .services.sheets import SheetsClient, extract_spreadsheet_id
 
 
@@ -248,6 +248,7 @@ def run_project(project_id, task_id=None, policy_override="", run_id=None):
             final_status = "success" if counts["failed"] == 0 else "finished_with_errors"
             message = "运行完成"
             error_message = ""
+            db.set_resume_row(project["id"], 0)
         db.finish_task_run(run_id, final_status, counts, error_message)
         summary = f"{message}：抓取 {counts['total']}，成功 {counts['success']}，失败 {counts['failed']}，跳过 {counts['skipped']}"
         note_progress(run_id, counts, summary, status=final_status)
@@ -301,12 +302,17 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
         if policy in {"skip_done", "retry_failed"} and status_col
         else {}
     )
+    resume_after = int(project.get("resume_after_row") or 0)
+    if resume_after > 0:
+        note_progress(run_id, counts, f"从断点继续：跳过第 {resume_after} 行及之前的行，从第 {resume_after + 1} 行开始")
     rotation_index = 0
     for row in rows:
         if should_stop(run_id):
             break
         url = row["url"]
         if not url:
+            continue
+        if resume_after and int(row["row_number"]) <= resume_after:
             continue
         if policy != "overwrite":
             skip_reason = existing_row_skip_reason(
@@ -328,6 +334,7 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
                     row_number=row["row_number"],
                     url=url,
                 )
+                db.set_resume_row(project["id"], row["row_number"])
                 continue
         if policy in {"skip_done", "retry_failed"} and status_col:
             existing_status = str(status_map.get(row["row_number"]) or "").strip()
@@ -342,6 +349,7 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
                     row_number=row["row_number"],
                     url=url,
                 )
+                db.set_resume_row(project["id"], row["row_number"])
                 continue
             if policy == "retry_failed" and existing_status not in {"失败", "ERROR", "failed"}:
                 counts["skipped"] += 1
@@ -354,6 +362,7 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
                     row_number=row["row_number"],
                     url=url,
                 )
+                db.set_resume_row(project["id"], row["row_number"])
                 continue
         counts["total"] += 1
         active_project = project_for_account(project, rotation_index)
@@ -404,6 +413,7 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
                 row_number=row["row_number"],
                 url=url,
             )
+            db.set_resume_row(project["id"], row["row_number"])
         except UserVisibleError as exc:
             write_post_failure(sheets, spreadsheet_id, project, fields, row, run_id, exc.user_message, exc.technical)
             counts["failed"] += 1
@@ -415,6 +425,7 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
                 row_number=row["row_number"],
                 url=url,
             )
+            db.set_resume_row(project["id"], row["row_number"])
         except Exception as exc:
             user_error = "抓取失败，请查看运行记录"
             write_post_failure(sheets, spreadsheet_id, project, fields, row, run_id, user_error, "".join(traceback.format_exception(exc)))
@@ -427,6 +438,7 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
                 row_number=row["row_number"],
                 url=url,
             )
+            db.set_resume_row(project["id"], row["row_number"])
 
 
 def existing_row_skip_reason(
@@ -542,6 +554,7 @@ def run_page_project(project, run_id, task_id, counts):
                     url=page_url,
                 )
                 driver = make_driver(active_project)
+                ensure_logged_in(driver)
                 driver.get(page_url)
                 time.sleep(4)
                 html = driver.page_source or ""
@@ -715,18 +728,10 @@ def run_page_project(project, run_id, task_id, counts):
                     },
                 )
             finally:
-                if driver:
-                    try:
-                        driver.quit()
-                    except Exception:
-                        pass
-                    driver = None
+                close_driver(driver)
+                driver = None
     finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
+        close_driver(driver)
 
 
 def write_page_checkpoint(sheets, spreadsheet_id, source_sheet, row_number, cursor, has_next_page, after_time, before_time, counts, last_post_time, stopped=False):

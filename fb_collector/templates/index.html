@@ -29,11 +29,19 @@
             <td class="mono">{{ project.spreadsheet_id }}</td>
             <td>{{ project.page_output_worksheet_name if project.project_type == "page" else project.worksheet_name }}</td>
             <td class="text-center">
-              <div class="d-flex gap-1 justify-content-center">
+              <div class="d-flex gap-1 justify-content-center flex-wrap">
                 <a class="btn btn-primary btn-sm" href="{{ url_for('project_edit', project_id=project.id) }}">编辑</a>
                 <form action="{{ url_for('project_run', project_id=project.id) }}" method="post" class="inline">
-                  <button class="btn btn-outline-primary btn-sm" type="submit">手动运行</button>
+                  <button class="btn btn-outline-primary btn-sm" type="submit">
+                    {% if project.resume_after_row %}从第 {{ project.resume_after_row + 1 }} 行继续{% else %}手动运行{% endif %}
+                  </button>
                 </form>
+                {% if project.resume_after_row %}
+                <form action="{{ url_for('project_run', project_id=project.id) }}" method="post" class="inline">
+                  <input type="hidden" name="from_start" value="1">
+                  <button class="btn btn-outline-secondary btn-sm" type="submit">从头再跑</button>
+                </form>
+                {% endif %}
               </div>
             </td>
           </tr>

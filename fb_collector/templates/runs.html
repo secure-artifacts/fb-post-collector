@@ -22,7 +22,12 @@
 
 <section class="card shadow-sm">
   <div class="card-body">
-    <h2 class="h4 mb-3">运行记录</h2>
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+      <h2 class="h4 mb-0">运行记录</h2>
+      <form action="{{ url_for('runs_clear_failed') }}" method="post" onsubmit="return confirm('确定清空所有失败的运行记录吗？运行中的任务不会被删除。');">
+        <button class="btn btn-outline-danger btn-sm" type="submit">清空失败记录</button>
+      </form>
+    </div>
     <div class="table-responsive">
       <table class="table table-sm table-hover align-middle mb-0">
         <thead class="table-light">
