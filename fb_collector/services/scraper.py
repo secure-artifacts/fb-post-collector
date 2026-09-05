@@ -387,11 +387,11 @@ def facebook_logged_in(driver):
         cookies.extend((driver.execute_cdp_cmd("Network.getAllCookies", {}) or {}).get("cookies") or [])
     except Exception:
         pass
-    names = {
-        cookie.get("name")
-        for cookie in cookies
-        if "facebook.com" in str(cookie.get("domain") or "facebook.com").lower()
-    }
+    names = set()
+    for cookie in cookies:
+        domain = str(cookie.get("domain") or "").lower().lstrip(".")
+        if domain == "facebook.com" or domain.endswith(".facebook.com"):
+            names.add(cookie.get("name"))
     if "c_user" in names:
         return True
     url = (driver.current_url or "").lower()

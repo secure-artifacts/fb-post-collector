@@ -576,8 +576,11 @@ def timeline_edges_and_page_info(payloads: list[dict[str, Any]]) -> tuple[list[d
 def first_story_url(story: dict[str, Any], actor_id: str = "") -> str:
     for item in walk_dicts(story):
         url = item.get("permalink_url") or item.get("url")
-        if isinstance(url, str) and "facebook.com" in url:
-            return url
+        if isinstance(url, str):
+            parsed = urlparse(url)
+            hostname = (parsed.hostname or "").lower()
+            if parsed.scheme == "https" and (hostname == "facebook.com" or hostname.endswith(".facebook.com")):
+                return url
     tracking = story.get("tracking")
     if tracking:
         try:

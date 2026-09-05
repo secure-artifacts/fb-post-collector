@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 APP_NAME = "FBPostCollector"
-APP_VERSION = "1.3.5"
+APP_VERSION = "1.3.6"
 BASE_DIR = Path(__file__).resolve().parent.parent
 APP_ROOT_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else BASE_DIR
 

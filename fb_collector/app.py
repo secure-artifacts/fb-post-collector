@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -23,6 +24,9 @@ from .services.rate_limit import FACEBOOK_GRAPHQL_DAILY_LIMIT, local_usage_date
 from .services.scraper import facebook_logged_in, login_check_driver
 from .services.sheets import clear_google_oauth, extract_spreadsheet_id, google_auth_status, run_google_oauth
 from .services.update_checker import check_for_update
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 WHISPER_LANGUAGE_OPTIONS = [
@@ -188,8 +192,9 @@ def create_app():
         try:
             open_browser_account(account, "https://www.facebook.com/")
             flash("已打开该账号的专用 Chrome。请在里面登录 Facebook，登录完成后可以直接点“检测登录”，不用先关窗口。", "success")
-        except Exception as exc:
-            flash(f"打开浏览器失败：{exc}", "danger")
+        except Exception:
+            LOGGER.exception("Failed to open browser account %s", account_id)
+            flash("打开浏览器失败，请查看软件日志。", "danger")
         return redirect(url_for("browser_accounts"))
 
     @app.route("/browser-accounts/<int:account_id>/check", methods=["POST"])
@@ -335,7 +340,7 @@ def create_app():
         if run and run.get("status") in {"running", "stopping"}:
             request_stop(run_id)
             flash("已请求停止，当前贴文处理完成后会停止。", "warning")
-        return redirect(request.referrer or url_for("run_detail", run_id=run_id))
+        return redirect(url_for("run_detail", run_id=run_id))
 
     @app.route("/environment")
     def environment():
@@ -350,12 +355,13 @@ def create_app():
         try:
             force = request.args.get("force") == "1"
             return jsonify(check_for_update(force=force))
-        except Exception as exc:
+        except Exception:
+            LOGGER.exception("Update check failed")
             return jsonify(
                 {
                     "ok": False,
                     "current_version": APP_VERSION,
-                    "error": f"检查更新失败：{exc}",
+                    "error": "检查更新失败，请确认网络连接后重试。",
                 }
             ), 502
 
@@ -375,10 +381,10 @@ def create_app():
         try:
             state = start_installation(payload.get("components") or [])
             return jsonify(state), 202
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-        except RuntimeError as exc:
-            return jsonify({"error": str(exc), "installation": installation_status()}), 409
+        except ValueError:
+            return jsonify({"error": "安装组件请求无效。"}), 400
+        except RuntimeError:
+            return jsonify({"error": "组件安装正在进行中，请稍后重试。", "installation": installation_status()}), 409
 
     @app.route("/environment/install/status")
     def environment_install_status():
@@ -430,8 +436,9 @@ def create_app():
         try:
             run_google_oauth()
             flash("Google 授权成功。", "success")
-        except Exception as exc:
-            flash(f"Google 授权失败：{exc}", "danger")
+        except Exception:
+            LOGGER.exception("Google authorization failed")
+            flash("Google 授权失败，请检查网络和凭据配置。", "danger")
         return redirect(url_for("settings"))
 
     @app.route("/auth/google/logout", methods=["POST"])
@@ -624,8 +631,9 @@ def check_facebook_login(account):
         return "not_logged_in", f"{account['name']} 尚未登录 Facebook。请点击“打开登录”。"
     except UserVisibleError as exc:
         return "unknown", exc.user_message
-    except Exception as exc:
-        return "unknown", f"无法确认登录状态：{exc}"
+    except Exception:
+        LOGGER.exception("Unable to check Facebook login for account %s", account.get("id"))
+        return "unknown", "无法确认登录状态，请查看软件日志后重试。"
     finally:
         if driver and not attached:
             try:
