@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card shadow-sm mb-4">
+  <div class="card-body">
+    <h1 class="h3 mb-3">浏览器账号</h1>
+    <p class="text-secondary small mb-3">
+      每个 Facebook 账号对应一个独立抓取浏览器账号。默认运行项目时使用后台浏览器；打开 Debug 后会显示浏览器窗口，并保留调试视频和文本。
+      点“打开登录”后，在弹出的 Chrome 里登录 Facebook，然后可以直接点“检测登录”，不必先关窗口。
+    </p>
+    <div id="account-check-alert" class="alert d-none py-2 small" role="alert"></div>
+    <form action="{{ url_for('browser_account_new') }}" method="post" class="row g-2 align-items-center">
+      <div class="col-sm-5 col-md-4">
+        <input class="form-control form-control-sm" name="name" placeholder="例如：FB账号-葡语1">
+      </div>
+      <div class="col-auto">
+        <button class="btn btn-primary btn-sm" type="submit">新增浏览器账号</button>
+      </div>
+    </form>
+  </div>
+</section>
+
+<section class="card shadow-sm">
+  <div class="card-body">
+    <h2 class="h4 mb-3">账号列表</h2>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light">
+          <tr>
+            <th style="width: 18%">名称</th>
+            <th style="width: 10%">登录状态</th>
+            <th style="width: 10%">Debug</th>
+            <th style="width: 20%">今日接口额度</th>
+            <th>独立配置目录</th>
+            <th style="width: 13%">最后检测</th>
+            <th class="text-center" style="width: 260px">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for account in accounts %}
+          {% set usage = account.graphql_usage %}
+          <tr class="{% if usage.is_limited %}table-warning{% endif %}" data-account-id="{{ account.id }}">
+            <td>
+              <form id="account-form-{{ account.id }}" action="{{ url_for('browser_account_update', account_id=account.id) }}" method="post">
+                <input class="form-control form-control-sm mb-2" name="name" value="{{ account.name }}">
+                <input type="hidden" name="browser_type" value="{{ account.browser_type }}">
+                <input class="form-control form-control-sm" name="notes" value="{{ account.notes }}" placeholder="备注">
+              </form>
+            </td>
+            <td class="login-status-cell">
+              {% if account.facebook_login_status == 'logged_in' %}
+                <span class="badge rounded-pill text-bg-success">已登录</span>
+              {% elif account.facebook_login_status == 'not_logged_in' %}
+                <span class="badge rounded-pill text-bg-warning">未登录</span>
+              {% else %}
+                <span class="badge rounded-pill text-bg-secondary">未知</span>
+              {% endif %}
+            </td>
+            <td>
+              <div class="form-check form-switch mb-0">
+                <input form="account-form-{{ account.id }}" class="form-check-input" type="checkbox" role="switch" name="debug_enabled" {% if account.debug_enabled %}checked{% endif %}>
+              </div>
+            </td>
+            <td>
+              <div class="d-flex justify-content-between small mb-1">
+                <span>{{ usage.used }} / {{ usage.limit }}</span>
+                <span>剩余 {{ usage.remaining }}</span>
+              </div>
+              <div class="progress" style="height: 8px">
+                <div
+                  class="progress-bar {% if usage.is_limited %}bg-danger{% elif usage.percent >= 85 %}bg-warning{% else %}bg-success{% endif %}"
+                  role="progressbar"
+                  style="width: {{ usage.percent }}%"
+                  aria-valuenow="{{ usage.percent }}"
+                  aria-valuemin="0"
+                  aria-valuemax="100">
+                </div>
+              </div>
+              {% if usage.is_limited %}
+                <div class="small text-danger mt-1">已达上限，请切换 FB 账号</div>
+              {% elif usage.percent >= 85 %}
+                <div class="small text-warning mt-1">额度快用完了</div>
+              {% endif %}
+              {% if usage.last_request_at %}
+                <div class="small text-secondary mt-1">上次请求：<span class="mono">{{ usage.last_request_at }}</span></div>
+              {% endif %}
+            </td>
+            <td>
+              <input form="account-form-{{ account.id }}" class="form-control form-control-sm mono" name="user_data_dir" value="{{ account.user_data_dir }}">
+            </td>
+            <td class="mono last-checked-cell">{{ account.last_checked_at or "" }}</td>
+            <td class="text-center">
+              <div class="d-flex gap-1 justify-content-center flex-wrap">
+                <button form="account-form-{{ account.id }}" class="btn btn-outline-secondary btn-sm" type="submit">保存</button>
+                <form action="{{ url_for('browser_account_open', account_id=account.id) }}" method="post">
+                  <button class="btn btn-outline-primary btn-sm" type="submit">打开登录</button>
+                </form>
+                <button class="btn btn-outline-success btn-sm check-login-btn" type="button" data-url="{{ url_for('browser_account_check', account_id=account.id) }}">检测登录</button>
+                <form action="{{ url_for('browser_account_delete', account_id=account.id) }}" method="post">
+                  <button class="btn btn-outline-danger btn-sm" type="submit">删除</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="7" class="text-center text-secondary py-4">还没有浏览器账号</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+<script>
+function loginStatusBadge(status) {
+  if (status === "logged_in") return '<span class="badge rounded-pill text-bg-success">已登录</span>';
+  if (status === "not_logged_in") return '<span class="badge rounded-pill text-bg-warning">未登录</span>';
+  return '<span class="badge rounded-pill text-bg-secondary">未知</span>';
+}
+
+function showCheckAlert(message, type) {
+  const box = document.querySelector("#account-check-alert");
+  if (!box) return;
+  box.className = `alert alert-${type} py-2 small`;
+  box.textContent = message;
+  box.classList.remove("d-none");
+}
+
+document.querySelectorAll(".check-login-btn").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const row = button.closest("tr");
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = "检测中...";
+    showCheckAlert("正在检测 Facebook 登录状态，请稍等。", "info");
+    try {
+      const response = await fetch(button.dataset.url, {
+        method: "POST",
+        headers: {
+          "X-Requested-With": "fetch",
+          "Accept": "application/json"
+        }
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "检测失败");
+      if (row) {
+        row.querySelector(".login-status-cell").innerHTML = loginStatusBadge(data.status);
+        row.querySelector(".last-checked-cell").textContent = data.last_checked_at || "";
+      }
+      showCheckAlert(data.message || "检测完成", data.status === "logged_in" ? "success" : "warning");
+    } catch (error) {
+      showCheckAlert(error.message || "检测失败，请稍后重试。", "danger");
+    } finally {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  });
+});
+</script>
+{% endblock %}

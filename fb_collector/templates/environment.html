@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card shadow-sm mb-4">
+  <div class="card-body">
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-3">
+      <div>
+        <h1 class="h3 mb-1">环境检测</h1>
+        <div class="text-secondary small">软件版本 v{{ app_version }}。检测到缺失组件时，可一键安装补齐运行环境。</div>
+      </div>
+      <div class="d-flex gap-2">
+        <button class="btn btn-primary btn-sm" type="button" id="install-missing" disabled>一键安装缺失组件</button>
+        <button class="btn btn-outline-primary btn-sm" type="button" id="refresh-environment">重新检测</button>
+      </div>
+    </div>
+
+    <div id="installation-status" class="alert alert-info d-none" role="status"></div>
+
+    <div id="environment-loading" class="py-5 text-center">
+      <div class="spinner-border text-primary mb-3" role="status" aria-hidden="true"></div>
+      <div class="fw-semibold">正在检测运行环境...</div>
+      <div class="text-secondary small mt-1">请稍等，检测完成后会自动显示结果。</div>
+    </div>
+
+    <div id="environment-error" class="alert alert-danger d-none" role="alert"></div>
+
+    <div id="environment-result" class="table-responsive d-none">
+      <table class="table table-sm align-middle mb-0">
+        <tbody id="tools-body"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="card shadow-sm">
+  <div class="card-body">
+    <h2 class="h4 mb-3">软件抓取浏览器账号</h2>
+
+    <div id="accounts-loading" class="text-secondary small">正在加载浏览器账号...</div>
+
+    <div id="accounts-result" class="table-responsive d-none">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light"><tr><th>名称</th><th>登录状态</th><th>独立配置目录</th><th>最后检测</th></tr></thead>
+        <tbody id="accounts-body"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<script>
+const loading = document.querySelector("#environment-loading");
+const accountsLoading = document.querySelector("#accounts-loading");
+const result = document.querySelector("#environment-result");
+const accountsResult = document.querySelector("#accounts-result");
+const errorBox = document.querySelector("#environment-error");
+const toolsBody = document.querySelector("#tools-body");
+const accountsBody = document.querySelector("#accounts-body");
+const refreshButton = document.querySelector("#refresh-environment");
+const installMissingButton = document.querySelector("#install-missing");
+const installationStatus = document.querySelector("#installation-status");
+let missingComponents = [];
+let installationTimer = null;
+
+function statusText(value) {
+  return value ? "可用" : "不可用";
+}
+
+function statusBadge(value) {
+  return value
+    ? '<span class="badge rounded-pill text-bg-success">可用</span>'
+    : '<span class="badge rounded-pill text-bg-danger">不可用</span>';
+}
+
+function languageBadge(value) {
+  return value
+    ? '<span class="badge rounded-pill text-bg-success">可用</span>'
+    : '<span class="badge rounded-pill text-bg-warning">缺失</span>';
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function toolRow(name, badgeHtml, path, version = "", component = "", available = true) {
+  const detail = [path, version].filter(Boolean).join(" | ");
+  const action = component && !available
+    ? `<button class="btn btn-outline-primary btn-sm install-component" data-component="${escapeHtml(component)}" type="button">安装</button>`
+    : "";
+  return `<tr><th>${escapeHtml(name)}</th><td>${badgeHtml}</td><td class="mono">${escapeHtml(detail)}</td><td>${action}</td></tr>`;
+}
+
+function renderTools(tools) {
+  const tesseractComplete = Boolean(
+    tools.tesseract?.available && tools.tesseract?.eng && tools.tesseract?.por
+    && tools.tesseract?.ara && tools.tesseract?.chi_sim
+  );
+  missingComponents = [];
+  if (!tesseractComplete) missingComponents.push("tesseract");
+  if (!tools.ffmpeg?.available) missingComponents.push("ffmpeg");
+  if (!tools.whisper?.available) missingComponents.push("whisper");
+  if (!tools.yt_dlp?.available) missingComponents.push("yt_dlp");
+  installMissingButton.disabled = missingComponents.length === 0;
+  installMissingButton.textContent = missingComponents.length
+    ? `一键安装缺失组件（${missingComponents.length}项）`
+    : "运行环境已完整";
+  toolsBody.innerHTML = [
+    toolRow("Chrome", statusBadge(tools.chrome?.available), tools.chrome?.path, "", "", tools.chrome?.available),
+    toolRow("Tesseract", statusBadge(tools.tesseract?.available), tools.tesseract?.path, "", "tesseract", tesseractComplete),
+    toolRow("eng语言包", languageBadge(tools.tesseract?.eng), "", "", "tesseract", tools.tesseract?.eng),
+    toolRow("por语言包", languageBadge(tools.tesseract?.por), "", "", "tesseract", tools.tesseract?.por),
+    toolRow("ara语言包", languageBadge(tools.tesseract?.ara), "", "", "tesseract", tools.tesseract?.ara),
+    toolRow("chi_sim语言包", languageBadge(tools.tesseract?.chi_sim), "", "", "tesseract", tools.tesseract?.chi_sim),
+    toolRow("ffmpeg", statusBadge(tools.ffmpeg?.available), tools.ffmpeg?.path, "", "ffmpeg", tools.ffmpeg?.available),
+    toolRow("whisper", statusBadge(tools.whisper?.available), tools.whisper?.path, tools.whisper?.version, "whisper", tools.whisper?.available),
+    toolRow("yt-dlp", statusBadge(tools.yt_dlp?.available), tools.yt_dlp?.path, tools.yt_dlp?.version, "yt_dlp", tools.yt_dlp?.available)
+  ].join("");
+}
+
+function renderInstallation(state) {
+  if (!state || state.status === "idle") {
+    installationStatus.classList.add("d-none");
+    return;
+  }
+  installationStatus.className = `alert ${state.status === "failed" ? "alert-danger" : state.status === "success" ? "alert-success" : "alert-info"}`;
+  const details = (state.results || []).map((item) => `${item.label}：${item.success ? "成功" : "失败"}`).join("；");
+  installationStatus.textContent = [state.message, details].filter(Boolean).join("。 ");
+  installationStatus.classList.remove("d-none");
+  const running = state.status === "running";
+  installMissingButton.disabled = running || missingComponents.length === 0;
+  document.querySelectorAll(".install-component").forEach((button) => { button.disabled = running; });
+  if (running && !installationTimer) {
+    installationTimer = setInterval(loadEnvironment, 3000);
+  } else if (!running && installationTimer) {
+    clearInterval(installationTimer);
+    installationTimer = null;
+  }
+}
+
+function renderAccounts(accounts) {
+  if (!accounts.length) {
+    accountsBody.innerHTML = '<tr><td colspan="4" class="text-secondary">还没有创建浏览器账号。</td></tr>';
+    return;
+  }
+  accountsBody.innerHTML = accounts.map((account) => `
+    <tr>
+      <td>${escapeHtml(account.name)}</td>
+      <td>${escapeHtml(account.facebook_login_status)}</td>
+      <td class="mono">${escapeHtml(account.user_data_dir)}</td>
+      <td class="mono">${escapeHtml(account.last_checked_at || "")}</td>
+    </tr>
+  `).join("");
+}
+
+async function loadEnvironment() {
+  loading.classList.remove("d-none");
+  accountsLoading.classList.remove("d-none");
+  result.classList.add("d-none");
+  accountsResult.classList.add("d-none");
+  errorBox.classList.add("d-none");
+  refreshButton.disabled = true;
+
+  try {
+    const response = await fetch("{{ url_for('environment_data') }}", { cache: "no-store" });
+    if (!response.ok) throw new Error("检测失败，请稍后重试。");
+    const data = await response.json();
+    renderTools(data.tools || {});
+    renderAccounts(data.browser_accounts || []);
+    renderInstallation(data.installation || {});
+    result.classList.remove("d-none");
+    accountsResult.classList.remove("d-none");
+  } catch (error) {
+    errorBox.textContent = error.message || "检测失败，请稍后重试。";
+    errorBox.classList.remove("d-none");
+  } finally {
+    loading.classList.add("d-none");
+    accountsLoading.classList.add("d-none");
+    refreshButton.disabled = false;
+  }
+}
+
+refreshButton.addEventListener("click", loadEnvironment);
+toolsBody.addEventListener("click", (event) => {
+  const button = event.target.closest(".install-component");
+  if (button) startInstallation([button.dataset.component]);
+});
+installMissingButton.addEventListener("click", () => startInstallation(missingComponents));
+
+async function startInstallation(components) {
+  if (!components.length) return;
+  installMissingButton.disabled = true;
+  installationStatus.className = "alert alert-info";
+  installationStatus.textContent = `正在准备安装 ${components.length} 个缺失组件，请不要关闭软件。Tesseract 语言包和 Whisper 可能需要较长时间。`;
+  installationStatus.classList.remove("d-none");
+  try {
+    const response = await fetch("{{ url_for('environment_install') }}", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ components })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "启动安装失败");
+    renderInstallation(data);
+  } catch (error) {
+    installationStatus.className = "alert alert-danger";
+    installationStatus.textContent = error.message || "启动安装失败";
+    installMissingButton.disabled = false;
+  }
+}
+loadEnvironment();
+</script>
+{% endblock %}

@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card shadow-sm mb-4">
+  <div class="card-body">
+    <h1 class="h3 mb-3">任务</h1>
+    <form action="{{ url_for('task_new') }}" method="post">
+      <div class="row g-3">
+        <label class="col-md-4 form-label">任务名称
+          <input class="form-control form-control-sm mt-1" name="name" placeholder="每天采集项目A">
+        </label>
+        <label class="col-md-4 form-label">项目
+          <select class="form-select form-select-sm mt-1" name="project_id">
+            {% for project in projects %}<option value="{{ project.id }}">{{ project.name }}</option>{% endfor %}
+          </select>
+        </label>
+        <label class="col-md-4 form-label">计划类型
+          <select class="form-select form-select-sm mt-1" name="schedule_type">
+            <option value="manual">手动</option>
+            <option value="minutes">每N分钟</option>
+            <option value="hours">每N小时</option>
+            <option value="daily">每天</option>
+            <option value="weekly">每周</option>
+            <option value="monthly">每月</option>
+            <option value="once">固定一次</option>
+          </select>
+        </label>
+        <label class="col-md-2 form-label">间隔<input class="form-control form-control-sm mt-1" name="interval" type="number" value="30"></label>
+        <label class="col-md-2 form-label">小时<input class="form-control form-control-sm mt-1" name="hour" type="number" value="9"></label>
+        <label class="col-md-2 form-label">分钟<input class="form-control form-control-sm mt-1" name="minute" type="number" value="0"></label>
+        <label class="col-md-2 form-label">星期(0=周一)<input class="form-control form-control-sm mt-1" name="weekday" type="number" value="0"></label>
+        <label class="col-md-2 form-label">日期<input class="form-control form-control-sm mt-1" name="day" type="number" value="1"></label>
+        <label class="col-md-4 form-label">下次运行时间<input class="form-control form-control-sm mt-1" name="next_run_at" placeholder="留空自动计算"></label>
+        <label class="col-md-4 form-label">运行策略
+          <select class="form-select form-select-sm mt-1" name="run_policy_override">
+            <option value="">使用项目配置</option>
+            <option value="skip_done">跳过已完成</option>
+            <option value="overwrite">覆盖重抓</option>
+            <option value="retry_failed">只重试失败</option>
+          </select>
+        </label>
+        <label class="col-md-2 form-check align-self-end mb-1">
+          <input class="form-check-input" type="checkbox" name="enabled" checked>
+          <span class="form-check-label">启用</span>
+        </label>
+      </div>
+      <button class="btn btn-primary btn-sm mt-3" type="submit">新增任务</button>
+    </form>
+  </div>
+</section>
+
+<section class="card shadow-sm">
+  <div class="card-body">
+    <h2 class="h4 mb-3">任务列表</h2>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light"><tr><th>名称</th><th>项目</th><th>计划</th><th>下次运行</th><th>启用</th><th class="text-center">操作</th></tr></thead>
+        <tbody>
+        {% for task in tasks %}
+          <tr>
+            <td>{{ task.name }}</td>
+            <td>{{ task.project_name }}</td>
+            <td>{{ task.schedule_type }}</td>
+            <td>{{ task.next_run_at }}</td>
+            <td>{{ "是" if task.enabled else "否" }}</td>
+            <td class="text-center">
+              <form action="{{ url_for('task_delete', task_id=task.id) }}" method="post" class="inline">
+                <button class="btn btn-danger btn-sm" type="submit">删除</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+{% endblock %}

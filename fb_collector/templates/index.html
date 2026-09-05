@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block content %}
+<script>setTimeout(() => window.location.reload(), 10000);</script>
+<section class="card shadow-sm mb-4">
+  <div class="card-body">
+    <h1 class="h3 mb-3">项目</h1>
+    <form action="{{ url_for('project_new') }}" method="post" class="row g-2 align-items-center mb-3">
+      <div class="col-sm-5 col-md-4">
+        <input class="form-control form-control-sm" name="name" placeholder="项目名称">
+      </div>
+      <div class="col-sm-4 col-md-3">
+        <select class="form-select form-select-sm" name="project_type" required>
+          <option value="post">贴文项目</option>
+          <option value="page">专页项目</option>
+        </select>
+      </div>
+      <div class="col-auto">
+        <button class="btn btn-primary btn-sm" type="submit">新增项目</button>
+      </div>
+    </form>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light"><tr><th>名称</th><th>类型</th><th>表格</th><th>分表</th><th class="text-center">操作</th></tr></thead>
+        <tbody>
+        {% for project in projects %}
+          <tr>
+            <td>{{ project.name }}</td>
+            <td>{{ "专页项目" if project.project_type == "page" else "贴文项目" }}</td>
+            <td class="mono">{{ project.spreadsheet_id }}</td>
+            <td>{{ project.page_output_worksheet_name if project.project_type == "page" else project.worksheet_name }}</td>
+            <td class="text-center">
+              <div class="d-flex gap-1 justify-content-center">
+                <a class="btn btn-primary btn-sm" href="{{ url_for('project_edit', project_id=project.id) }}">编辑</a>
+                <form action="{{ url_for('project_run', project_id=project.id) }}" method="post" class="inline">
+                  <button class="btn btn-outline-primary btn-sm" type="submit">手动运行</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="card shadow-sm">
+  <div class="card-body">
+    <h2 class="h4 mb-3">最近运行</h2>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light"><tr><th>ID</th><th>项目</th><th>状态</th><th>成功</th><th>失败</th><th>开始时间</th></tr></thead>
+        <tbody>
+        {% for run in runs %}
+          <tr>
+            <td><a href="{{ url_for('run_detail', run_id=run.id) }}">{{ run.id }}</a></td>
+            <td>{{ run.project_name }}</td>
+            <td><span class="badge rounded-pill {{ status_badge_class(run.status) }}">{{ status_label(run.status) }}</span></td>
+            <td>{{ run.success_rows }}</td>
+            <td>{{ run.failed_rows }}</td>
+            <td>{{ run.started_at }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+{% endblock %}

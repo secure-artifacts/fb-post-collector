@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.data/
+server*.log
+dist/
+build/
+installer_output/
+*.spec.bak
+*.sqlite3
+tools/
+google_credentials.json
+*.token
+.env

@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+{% block content %}
+<form id="delete-project-form" action="{{ url_for('project_delete', project_id=project.id) }}" method="post" class="d-none"></form>
+<form method="post" id="project-form">
+  <section class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h1 class="h3 mb-3">编辑项目</h1>
+      <div class="row g-3">
+        <label class="col-md-4 form-label">项目名称
+          <input class="form-control form-control-sm mt-1" name="name" value="{{ project.name }}">
+        </label>
+        <div class="col-md-4  form-label">项目类型
+          <div class="form-control form-control-sm mt-1 bg-light">
+            {{ "专页项目" if project.project_type == "page" else "贴文项目" }}
+          </div>
+          <input type="hidden" name="project_type" id="project-type" value="{{ project.project_type or 'post' }}">
+        </div>
+
+        <div class="col-12">
+          <label class="form-label">抓取浏览器账号</label>
+          <div class="alert alert-info py-2 small">
+            可选择多个独立 Chrome Profile。抓取贴文时会按选中顺序逐条轮询账号，降低单账号连续请求压力。
+            <a href="{{ url_for('browser_accounts') }}">去管理浏览器账号</a>
+          </div>
+          {% if browser_accounts %}
+            <div class="account-card-grid">
+              {% for account in browser_accounts %}
+                {% set usage = account.graphql_usage %}
+                <label class="account-card {% if account.id in project.browser_account_ids %}selected{% endif %} {% if usage.is_limited %}border-warning{% endif %}">
+                  <input type="checkbox" name="browser_account_ids" value="{{ account.id }}" {% if account.id in project.browser_account_ids %}checked{% endif %}>
+                  <span class="profile-avatar profile-initial">账</span>
+                  <span class="profile-main">
+                    <span class="profile-title">
+                      {{ account.name }}
+                      {% if usage.is_limited %}
+                        <span class="badge text-bg-warning ms-1">今日已满</span>
+                      {% endif %}
+                    </span>
+                    <span class="profile-subtitle">{{ account.user_data_dir }}</span>
+                    <span class="profile-meta">Facebook：{{ account.facebook_login_status }}</span>
+                    <span class="profile-meta">今日接口：{{ usage.used }} / {{ usage.limit }}，剩余 {{ usage.remaining }}</span>
+                    {% if usage.is_limited %}
+                      <span class="profile-meta text-danger">请选择其他 FB 账号继续抓取</span>
+                    {% endif %}
+                  </span>
+                </label>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="alert alert-warning py-2 small mb-0">
+              还没有抓取浏览器账号。请先到“浏览器账号”页面创建并登录 Facebook。
+            </div>
+          {% endif %}
+        </div>
+
+        <input type="hidden" name="browser_type" value="chrome">
+        <input type="hidden" name="browser_profile_mode" value="browser_account">
+        <input type="hidden" name="browser_profile_path" value="">
+
+        <label class="col-md-8 form-label">Google 表格链接
+          <input class="form-control form-control-sm mt-1" name="spreadsheet_url" value="{{ project.spreadsheet_url }}">
+        </label>
+        <input type="hidden" name="spreadsheet_id" value="{{ project.spreadsheet_id }}">
+      </div>
+    </div>
+  </section>
+
+  <section class="card shadow-sm mb-4 project-mode project-mode-post">
+    <div class="card-body">
+      <h2 class="h5 mb-3">贴文项目配置</h2>
+      <div class="row g-3">
+        <label class="col-md-3 form-label">分表名称
+          <input class="form-control form-control-sm mt-1" name="worksheet_name" value="{{ project.worksheet_name }}">
+        </label>
+        <label class="col-md-2 form-label">贴文链接列
+          <input class="form-control form-control-sm mt-1" name="link_column" value="{{ project.link_column }}">
+        </label>
+        <label class="col-md-2 form-label">表头行
+          <input class="form-control form-control-sm mt-1" name="header_row" type="number" value="{{ project.header_row }}">
+        </label>
+        <label class="col-md-2 form-label">数据开始行
+          <input class="form-control form-control-sm mt-1" name="start_row" type="number" value="{{ project.start_row }}">
+        </label>
+        <label class="col-md-2 form-label">写入开始列
+          <input class="form-control form-control-sm mt-1" id="write-start-column" name="write_start_column" value="{{ project.write_start_column }}">
+        </label>
+        <label class="col-md-2 form-label">抓取日志列
+          <input class="form-control form-control-sm mt-1" name="processed_log_column" value="{{ project.processed_log_column or '' }}" placeholder="例如 AK">
+          <span class="form-text">成功后写入“已抓取”。下次优先看这一列，有记录就跳过。</span>
+        </label>
+        <label class="col-md-3 form-label">重复运行策略
+          <select class="form-select form-select-sm mt-1" name="rerun_policy">
+            <option value="skip_done" {% if project.rerun_policy == 'skip_done' %}selected{% endif %}>跳过已完成</option>
+            <option value="overwrite" {% if project.rerun_policy == 'overwrite' %}selected{% endif %}>覆盖重抓</option>
+            <option value="retry_failed" {% if project.rerun_policy == 'retry_failed' %}selected{% endif %}>只重试失败</option>
+          </select>
+        </label>
+        <div class="col-md-4 d-flex align-items-center">
+          <div class="form-check mt-3">
+            <input class="form-check-input" id="skip-existing-write-data" name="skip_existing_write_data" type="checkbox" {% if project.skip_existing_write_data %}checked{% endif %}>
+            <label class="form-check-label" for="skip-existing-write-data">写入开始列已有数据时跳过，只跑新增空行</label>
+          </div>
+        </div>
+        <div class="col-12">
+          <div class="alert alert-secondary py-2 small mb-0">
+            下次执行顺序：先看抓取日志列，有记录直接跳过；没有记录再看写入开始列，有数据也跳过；两列都空才抓取。选择“覆盖重抓”时不跳过。
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card shadow-sm mb-4 project-mode project-mode-page">
+    <div class="card-body">
+      <h2 class="h5 mb-3">专页项目配置</h2>
+      <div class="alert alert-secondary py-2 small">
+        专页链接分表固定 A 列为专页链接，B 列为完成情况。
+      </div>
+      <div class="row g-3">
+        <label class="col-md-3 form-label">专页链接分表名称
+          <input class="form-control form-control-sm mt-1" name="page_source_worksheet_name" value="{{ project.page_source_worksheet_name }}">
+        </label>
+        <label class="col-md-3 form-label">数据写入分表名称
+          <input class="form-control form-control-sm mt-1" name="page_output_worksheet_name" value="{{ project.page_output_worksheet_name }}">
+        </label>
+        <label class="col-md-3 form-label">开始日期时间
+          <input class="form-control form-control-sm mt-1" name="page_start_at" type="datetime-local" value="{{ project.page_start_at }}">
+        </label>
+        <label class="col-md-3 form-label">结束日期时间
+          <input class="form-control form-control-sm mt-1" name="page_end_at" type="datetime-local" value="{{ project.page_end_at }}">
+        </label>
+        <label class="col-md-2 form-label">表头行
+          <input class="form-control form-control-sm mt-1" name="page_header_row_display" type="number" value="{{ project.header_row }}" disabled>
+        </label>
+        <label class="col-md-2 form-label">写入开始列
+          <input class="form-control form-control-sm mt-1" name="page_write_start_column_display" value="{{ project.write_start_column }}" disabled>
+        </label>
+      </div>
+    </div>
+  </section>
+
+  <section class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h2 class="h5 mb-3">识别语言</h2>
+      <div class="row g-3">
+        <label class="col-md-4 form-label">OCR语言
+          <select class="form-select form-select-sm mt-1" name="ocr_languages">
+            {% set selected_ocr_language = 'por' if '+' in (project.ocr_languages or '') and 'por' in (project.ocr_languages or '') else (project.ocr_languages or 'por') %}
+            {% for code, label in ocr_language_options %}
+              <option value="{{ code }}" {% if selected_ocr_language == code %}selected{% endif %}>{{ label }}{% if code %} ({{ code }}){% endif %}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="col-md-4 form-label">Whisper语言
+          <select class="form-select form-select-sm mt-1" name="whisper_language">
+            {% for code, label in whisper_language_options %}
+              <option value="{{ code }}" {% if project.whisper_language == code %}selected{% endif %}>{{ label }}{% if code %} ({{ code }}){% endif %}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="col-md-4 form-label">音频识别点赞门槛
+          <input class="form-control form-control-sm mt-1" name="audio_min_like_count" type="number" min="0" step="1" value="{{ project.audio_min_like_count or 0 }}">
+          <span class="form-text">视频贴点赞量低于此数值时跳过音频识别；0 表示不限制。</span>
+        </label>
+      </div>
+    </div>
+  </section>
+
+  <section class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h2 class="h4 mb-2">字段配置</h2>
+      <p class="text-secondary small mb-2">勾选需要写入表格的字段。写入列默认从“写入开始列”连号，例如开始列是 D，后面就是 E、F、G。以后只要改这里的列号，写入时就会写到指定列。</p>
+      <div class="d-flex flex-wrap gap-2 mb-3">
+        <button class="btn btn-outline-primary btn-sm" id="apply-recommended-fields" type="button">应用推荐表头（19列）</button>
+        <button class="btn btn-outline-secondary btn-sm" id="enable-all-fields" type="button">全部启用</button>
+        <button class="btn btn-outline-secondary btn-sm" id="disable-all-fields" type="button">全部关闭</button>
+        <button class="btn btn-outline-secondary btn-sm" id="renumber-field-columns" type="button">按写入开始列重新连号</button>
+        <button class="btn btn-outline-success btn-sm" id="export-fields" type="button">导出字段配置</button>
+        <button class="btn btn-outline-success btn-sm" id="import-fields" type="button">导入字段配置</button>
+        <input class="d-none" id="import-fields-file" type="file" accept="application/json,.json">
+      </div>
+      <div class="alert py-2 small d-none" id="field-config-message" role="alert"></div>
+      <div class="field-list-head">
+        <span></span>
+        <span></span>
+        <span>表头名称</span>
+        <span>写入列</span>
+        <span></span>
+      </div>
+      <div id="fields-list">
+        {% for field in project.fields %}
+        <div class="field-row" draggable="true" data-key="{{ field.field_key }}">
+          <span class="drag">::</span>
+          <input class="form-check-input" type="checkbox" {% if field.enabled or (project.project_type == 'page' and field.field_key == 'post_url') %}checked{% endif %}>
+          <input class="field-label form-control form-control-sm" value="{{ field.field_label }}">
+          <input class="field-column form-control form-control-sm" value="{{ field.write_column or '' }}" maxlength="3" placeholder="列" title="写入到表格的列号">
+          <div class="field-actions btn-group btn-group-sm">
+            <button class="btn btn-outline-secondary move-up" type="button" title="上移">↑</button>
+            <button class="btn btn-outline-secondary move-down" type="button" title="下移">↓</button>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      <input type="hidden" name="fields_json" id="fields-json">
+    </div>
+  </section>
+
+  <div class="d-flex gap-2 mb-3">
+    <button class="btn btn-primary btn-sm" type="submit" {% if not browser_accounts %}disabled{% endif %}>保存项目</button>
+    <button type="submit" form="delete-project-form" class="btn btn-danger btn-sm">删除项目</button>
+  </div>
+</form>
+<script src="{{ url_for('static', filename='project.js') }}"></script>
+{% endblock %}

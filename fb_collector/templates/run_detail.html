@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block content %}
+<script>
+window.RUN_LIVE_URL = "{{ url_for('api_run_live', run_id=run_id) }}";
+</script>
+<script src="{{ url_for('static', filename='run_detail.js') }}"></script>
+<section class="card shadow-sm">
+  <div class="card-body">
+    <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap mb-3">
+      <h1 class="h3 mb-0">运行详情 #{{ run_id }}</h1>
+      {% if run and run.status in ['running', 'stopping'] %}
+        <form action="{{ url_for('run_stop', run_id=run_id) }}" method="post" class="inline">
+          <button class="btn btn-warning btn-sm" type="submit" {% if run.status == 'stopping' %}disabled{% endif %}>停止</button>
+        </form>
+      {% endif %}
+    </div>
+    {% if run %}
+      <div class="border rounded-3 p-3 mb-3 bg-light">
+        <div class="row g-3 align-items-center">
+          <div class="col-md-2">
+            <div class="text-secondary small">状态</div>
+            <div id="detail-status"><span class="badge rounded-pill {{ status_badge_class(run.status) }}">{{ status_label(run.status) }}</span></div>
+          </div>
+          <div class="col-md-2">
+            <div class="text-secondary small">已抓取</div>
+            <div id="detail-total">{{ run.total_rows }}</div>
+          </div>
+          <div class="col-md-2">
+            <div class="text-secondary small">成功</div>
+            <div id="detail-success">{{ run.success_rows }}</div>
+          </div>
+          <div class="col-md-2">
+            <div class="text-secondary small">失败</div>
+            <div id="detail-failed">{{ run.failed_rows }}</div>
+          </div>
+          <div class="col-md-4">
+            <div class="text-secondary small">当前进度</div>
+            <div id="detail-message">{{ run.error_message or "运行中请稍等" }}</div>
+          </div>
+        </div>
+      </div>
+      <div class="run-log mb-3" id="run-log"></div>
+    {% endif %}
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead class="table-light">
+          <tr>
+            <th>行号</th>
+            <th>链接</th>
+            <th>状态</th>
+            <th>用户错误</th>
+            <th>技术详情</th>
+            <th>原始诊断</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for row in rows %}
+          <tr>
+            <td>{{ row.sheet_row_number }}</td>
+            <td class="mono">{{ row.post_url }}</td>
+            <td><span class="badge rounded-pill {{ status_badge_class(row.status) }}">{{ status_label(row.status) }}</span></td>
+            <td>{{ row.user_error_message }}</td>
+            <td><details><summary>查看</summary><pre>{{ row.technical_error or "无技术错误" }}</pre></details></td>
+            <td><details><summary>查看</summary><pre>{{ row.raw_result_json }}</pre></details></td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="6" class="text-center text-secondary py-4">本次运行还没有行记录，运行中请稍等片刻。</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+{% endblock %}
