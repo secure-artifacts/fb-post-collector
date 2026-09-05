@@ -6,9 +6,9 @@ from msilib import CAB, Directory, Feature, add_data, add_tables, schema, sequen
 
 
 PRODUCT_NAME = "FB Post Collector"
-PRODUCT_VERSION = "1.3.2"
+PRODUCT_VERSION = "1.3.4"
 MANUFACTURER = "FBPostCollector"
-PRODUCT_CODE = "{B30C9CD1-8D3B-4D4C-ACB9-ED47EBC314FA}"
+PRODUCT_CODE = "{4A9E3E45-CFAA-441A-9D62-994B311DDE11}"
 UPGRADE_CODE = "{E3D0C675-CB19-45FC-B24B-5224965E8B53}"
 
 
@@ -120,7 +120,7 @@ def build_msi(source_dir, output_file):
 def main():
     parser = argparse.ArgumentParser(description="生成 FBPostCollector Windows MSI 安装包")
     parser.add_argument("--source", default="dist/FBPostCollector")
-    parser.add_argument("--output", default="dist/FBPostCollector-Setup-v1.3.2.msi")
+    parser.add_argument("--output", default="dist/FBPostCollector-Setup-v1.3.4.msi")
     args = parser.parse_args()
     result = build_msi(args.source, args.output)
     print(result)

@@ -303,6 +303,7 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
         else {}
     )
     resume_after = int(project.get("resume_after_row") or 0)
+    first_retry_row = None
     if resume_after > 0:
         note_progress(run_id, counts, f"从断点继续：跳过第 {resume_after} 行及之前的行，从第 {resume_after + 1} 行开始")
     rotation_index = 0
@@ -334,7 +335,8 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
                     row_number=row["row_number"],
                     url=url,
                 )
-                db.set_resume_row(project["id"], row["row_number"])
+                if first_retry_row is None:
+                    db.set_resume_row(project["id"], row["row_number"])
                 continue
         if policy in {"skip_done", "retry_failed"} and status_col:
             existing_status = str(status_map.get(row["row_number"]) or "").strip()
@@ -349,7 +351,8 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
                     row_number=row["row_number"],
                     url=url,
                 )
-                db.set_resume_row(project["id"], row["row_number"])
+                if first_retry_row is None:
+                    db.set_resume_row(project["id"], row["row_number"])
                 continue
             if policy == "retry_failed" and existing_status not in {"失败", "ERROR", "failed"}:
                 counts["skipped"] += 1
@@ -362,7 +365,8 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
                     row_number=row["row_number"],
                     url=url,
                 )
-                db.set_resume_row(project["id"], row["row_number"])
+                if first_retry_row is None:
+                    db.set_resume_row(project["id"], row["row_number"])
                 continue
         counts["total"] += 1
         active_project = project_for_account(project, rotation_index)
@@ -413,7 +417,8 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
                 row_number=row["row_number"],
                 url=url,
             )
-            db.set_resume_row(project["id"], row["row_number"])
+            if first_retry_row is None:
+                db.set_resume_row(project["id"], row["row_number"])
         except UserVisibleError as exc:
             write_post_failure(sheets, spreadsheet_id, project, fields, row, run_id, exc.user_message, exc.technical)
             counts["failed"] += 1
@@ -425,7 +430,9 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
                 row_number=row["row_number"],
                 url=url,
             )
-            db.set_resume_row(project["id"], row["row_number"])
+            if first_retry_row is None:
+                first_retry_row = int(row["row_number"])
+                db.set_resume_row(project["id"], max(start_row - 1, first_retry_row - 1))
         except Exception as exc:
             user_error = "抓取失败，请查看运行记录"
             write_post_failure(sheets, spreadsheet_id, project, fields, row, run_id, user_error, "".join(traceback.format_exception(exc)))
@@ -438,7 +445,9 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
                 row_number=row["row_number"],
                 url=url,
             )
-            db.set_resume_row(project["id"], row["row_number"])
+            if first_retry_row is None:
+                first_retry_row = int(row["row_number"])
+                db.set_resume_row(project["id"], max(start_row - 1, first_retry_row - 1))
 
 
 def existing_row_skip_reason(
@@ -488,8 +497,35 @@ def add_task_level_failure(run_id, user_error, technical):
 
 
 def write_post_failure(sheets, spreadsheet_id, project, fields, row, run_id, user_error, technical):
-    values_map = {"status": "失败", "error_message": user_error, "scraped_at": now_text(), "post_url": row["url"]}
-    written = write_field_row(sheets, spreadsheet_id, project["worksheet_name"], row["row_number"], fields, values_map)
+    # 失败时绝不能把本次没有抓到的字段以空字符串回写，否则会清掉表格中已有数据。
+    # 同时避开“写入开始列”和“已抓取日志列”，保证失败行下次运行时仍然会重试。
+    values_map = {"status": "失败", "error_message": user_error, "scraped_at": now_text()}
+    protected_columns = {
+        normalize_column(project.get("write_start_column"), "D"),
+        normalize_column(project.get("processed_log_column"), "AK"),
+    }
+    write_pairs = []
+    written = {}
+    for field in fields:
+        field_key = field.get("field_key")
+        write_column = normalize_column(field.get("write_column"), "")
+        if field_key not in values_map or not write_column or write_column in protected_columns:
+            continue
+        value = values_map[field_key]
+        write_pairs.append((write_column, value))
+        written[field_key] = value
+    sheet_error = ""
+    if write_pairs:
+        try:
+            sheets.write_mapped_values(
+                spreadsheet_id,
+                project["worksheet_name"],
+                row["row_number"],
+                write_pairs,
+            )
+        except Exception as exc:
+            sheet_error = f"\n失败状态写入表格时也发生错误（不影响下次重试）：{exc!r}"
+            written = {}
     db.add_row_run(
         run_id,
         row["row_number"],
@@ -497,7 +533,7 @@ def write_post_failure(sheets, spreadsheet_id, project, fields, row, run_id, use
         {
             "status": "failed",
             "error_message": user_error,
-            "technical_error": technical,
+            "technical_error": f"{technical or ''}{sheet_error}",
             "started_at": now_text(),
             "finished_at": now_text(),
             "written": written,
@@ -558,7 +594,7 @@ def run_page_project(project, run_id, task_id, counts):
                 driver.get(page_url)
                 time.sleep(4)
                 html = driver.page_source or ""
-                page_state(driver.current_url, driver.title or "", html)
+                page_state(driver.current_url, driver.title or "", html, driver)
                 profile_id = extract_profile_id(driver.current_url, html)
                 if not profile_id:
                     raise InvalidLinkError("无法识别专页ID", f"url={driver.current_url}")

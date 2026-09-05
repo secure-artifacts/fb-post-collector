@@ -133,10 +133,23 @@ function renderInstallation(state) {
   installMissingButton.disabled = running || missingComponents.length === 0;
   document.querySelectorAll(".install-component").forEach((button) => { button.disabled = running; });
   if (running && !installationTimer) {
-    installationTimer = setInterval(loadEnvironment, 3000);
+    installationTimer = setInterval(pollInstallation, 3000);
   } else if (!running && installationTimer) {
     clearInterval(installationTimer);
     installationTimer = null;
+  }
+}
+
+async function pollInstallation() {
+  try {
+    const response = await fetch("{{ url_for('environment_install_status') }}", { cache: "no-store" });
+    if (!response.ok) return;
+    const state = await response.json();
+    const wasRunning = state.status === "running";
+    renderInstallation(state);
+    if (!wasRunning) await loadEnvironment();
+  } catch (_) {
+    // 临时网络抖动不终止后台安装，下一次轮询会继续读取状态。
   }
 }
 

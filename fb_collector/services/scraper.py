@@ -76,9 +76,9 @@ def now_text():
 
 def extract_post_id(url, html=""):
     patterns = [
-        r"/posts/([^/?#]+)",
-        r"/videos/([^/?#]+)",
-        r"/reel/([^/?#]+)",
+        r"/posts/([^/?#\s]+)",
+        r"/videos/([^/?#\s]+)",
+        r"/reel/([^/?#\s]+)",
         r"[?&](?:story_fbid|fbid|v)=([^&#]+)",
         r'"post_id"\s*:\s*"([^"]+)"',
         r'"story_fbid"\s*:\s*"([^"]+)"',
@@ -130,6 +130,12 @@ def canonicalize_facebook_url(url):
     host = parsed.netloc.lower()
     if host in {"fb.com", "www.fb.com", "m.fb.com"}:
         host = "www.facebook.com"
+    path = parsed.path
+    # Facebook 会把 /专页ID_贴文ID 这种复合短链重定向到专页主页。
+    # 先展开为标准贴文永久链接，避免被后续的“个人主页保护”误判。
+    composite = re.fullmatch(r"/(\d+)_(\d+)/?", path)
+    if composite:
+        path = f"/{composite.group(1)}/posts/{composite.group(2)}"
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
     keep = {}
     for key in ("story_fbid", "fbid", "id", "v"):
@@ -137,7 +143,7 @@ def canonicalize_facebook_url(url):
             keep[key] = query[key]
     if "/reel/" in parsed.path or "/videos/" in parsed.path:
         keep = {}
-    return urlunparse((parsed.scheme, host, parsed.path, "", urlencode(keep), ""))
+    return urlunparse((parsed.scheme, host, path, "", urlencode(keep), ""))
 
 
 def is_obvious_profile_url(url):
@@ -370,10 +376,22 @@ def ensure_logged_in(driver):
 
 
 def facebook_logged_in(driver):
+    cookies = []
     try:
-        names = {cookie.get("name") for cookie in (driver.get_cookies() or [])}
+        cookies.extend(driver.get_cookies() or [])
     except Exception:
-        names = set()
+        pass
+    # 附加到已经打开的 Chrome 时，Selenium 有时只返回当前标签页域名的 Cookie。
+    # CDP 的全域 Cookie 能正确识别同一个 Profile 中真实存在的 Facebook 登录态。
+    try:
+        cookies.extend((driver.execute_cdp_cmd("Network.getAllCookies", {}) or {}).get("cookies") or [])
+    except Exception:
+        pass
+    names = {
+        cookie.get("name")
+        for cookie in cookies
+        if "facebook.com" in str(cookie.get("domain") or "facebook.com").lower()
+    }
     if "c_user" in names:
         return True
     url = (driver.current_url or "").lower()
@@ -384,15 +402,24 @@ def facebook_logged_in(driver):
         return False
     if re.search(r'"USER_ID"\s*:\s*"[1-9]\d+"', html):
         return True
+    if re.search(r'"(?:ACCOUNT_ID|actorID|__user)"?\s*[:=]\s*"[1-9]\d+"', html):
+        return True
     title = (driver.title or "").lower()
     if "log in" in title or "登录" in title:
         return False
     return False
 
 
-def page_state(url, title, html):
+def page_state(url, title, html, driver=None):
     haystack = f"{url}\n{title}\n{html[:50000]}".lower()
-    if "login" in url.lower() or "log in to facebook" in haystack or "登录 facebook" in haystack:
+    current_url = (url or "").lower()
+    login_url = "/login" in current_url or "login.php" in current_url
+    login_title = (title or "").strip().lower() in {"log in to facebook", "登录 facebook"}
+    login_form = bool(
+        re.search(r'<input[^>]+name=["\'](?:email|pass)["\']', html[:100000], re.IGNORECASE)
+    )
+    has_session = facebook_logged_in(driver) if driver else False
+    if not has_session and (login_url or login_title or login_form):
         raise LoginRequiredError(
             "这个抓取账号还没登录 Facebook。请到「浏览器账号」点「打开登录」，在弹出的 Chrome 里登录。登录完成后不用关窗口，再重新运行抓取。"
         )
@@ -735,10 +762,11 @@ class FacebookScraper:
         try:
             driver = make_driver(project)
             ensure_logged_in(driver)
-            driver.get(url)
+            request_url = canonicalize_facebook_url(url)
+            driver.get(request_url)
             time.sleep(5)
             html = driver.page_source or ""
-            page_state(driver.current_url, driver.title or "", html)
+            page_state(driver.current_url, driver.title or "", html, driver)
             final_url = canonicalize_facebook_url(driver.current_url)
             reject_non_post_redirect(url, final_url)
 
@@ -762,6 +790,7 @@ class FacebookScraper:
             raw.update(
                 {
                     "input_url": url,
+                    "request_url": request_url,
                     "url": driver.current_url,
                     "canonical_url": final_url,
                     "title": title,

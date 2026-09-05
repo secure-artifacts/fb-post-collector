@@ -361,6 +361,10 @@ def create_app():
         except RuntimeError as exc:
             return jsonify({"error": str(exc), "installation": installation_status()}), 409
 
+    @app.route("/environment/install/status")
+    def environment_install_status():
+        return jsonify(installation_status())
+
     @app.route("/settings", methods=["GET", "POST"])
     def settings():
         if request.method == "POST":
@@ -419,7 +423,7 @@ def create_app():
 
     @app.route("/api/status")
     def api_status():
-        return jsonify({"running": running_status(), "runs": db.list_runs(10)})
+        return jsonify({"version": APP_VERSION, "running": running_status(), "runs": db.list_runs(10)})
 
     @app.route("/api/runs/live")
     def api_runs_live():
