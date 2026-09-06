@@ -37,7 +37,6 @@ def port_in_use(host, port):
 def can_bind(host, port):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((host, port))
         return True
     except OSError:
@@ -652,4 +651,3 @@ def start_desktop_shell(url, start_server, on_quit):
         _log(f"status window failed: {exc}")
     _log("status window ended, keeping server")
     server_thread.join()
-

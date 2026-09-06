@@ -12,7 +12,7 @@ from pathlib import Path
 from flask import Flask, flash, jsonify, redirect, render_template, request, url_for
 
 from . import db
-from .config import APP_VERSION
+from .config import APP_VERSION, BASE_DIR, DATA_DIR
 from .fields import assign_default_write_columns, normalize_column
 from .runner import request_pause, request_resume, request_stop, run_project, running_status
 from .scheduler import SchedulerThread, next_run
@@ -743,6 +743,23 @@ def main():
 
     host = "127.0.0.1"
     _log(f"main start frozen={getattr(sys, 'frozen', False)} pid={os.getpid()}")
+    if len(sys.argv) >= 3 and sys.argv[1] == "--server-only":
+        try:
+            port = int(sys.argv[2])
+        except (TypeError, ValueError):
+            _log(f"invalid server port: {sys.argv[2] if len(sys.argv) > 2 else ''}")
+            return
+        _log(f"server child start pid={os.getpid()} port={port}")
+        app = create_app()
+        scheduler = SchedulerThread(interval=30)
+        scheduler.start()
+        try:
+            app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
+        finally:
+            scheduler.stop()
+            _log(f"server child ended pid={os.getpid()} port={port}")
+        return
+
     port, existing = pick_port(host, 5199)
     url = f"http://{host}:{port}"
     _log(f"picked port={port} existing={existing}")
@@ -753,15 +770,42 @@ def main():
     ensure_port_free(host, port)
     _log(f"port ready {port}")
 
-    app = create_app()
-    scheduler = SchedulerThread(interval=30)
-    scheduler.start()
+    server_process = {"value": None}
 
     def quit_app():
-        scheduler.stop()
+        process = server_process.get("value")
+        if process and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
         os._exit(0)
 
     def start_server():
-        app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
+        if getattr(sys, "frozen", False):
+            command = [sys.executable, "--server-only", str(port)]
+            working_directory = str(Path(sys.executable).resolve().parent)
+        else:
+            command = [sys.executable, str(BASE_DIR / "launcher.py"), "--server-only", str(port)]
+            working_directory = str(BASE_DIR)
+        stdout_path = DATA_DIR / "server.out.log"
+        stderr_path = DATA_DIR / "server.err.log"
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        try:
+            with stdout_path.open("a", encoding="utf-8") as stdout_log, stderr_path.open("a", encoding="utf-8") as stderr_log:
+                process = subprocess.Popen(
+                    command,
+                    cwd=working_directory,
+                    stdout=stdout_log,
+                    stderr=stderr_log,
+                    creationflags=creation_flags,
+                )
+                server_process["value"] = process
+                _log(f"server child launched pid={process.pid} port={port}")
+                return_code = process.wait()
+                _log(f"server child exited pid={process.pid} code={return_code}")
+        except Exception as exc:
+            _log(f"server child launch failed: {exc}")
 
     start_desktop_shell(url, start_server, quit_app)
