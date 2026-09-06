@@ -31,6 +31,8 @@ class FakeScraper:
     active = 0
     max_active = 0
     started = []
+    active_accounts = set()
+    account_overlap = False
 
     @classmethod
     def reset(cls):
@@ -38,16 +40,23 @@ class FakeScraper:
         cls.active = 0
         cls.max_active = 0
         cls.started = []
+        cls.active_accounts = set()
+        cls.account_overlap = False
 
     def scrape(self, url, project):
         with self.lock:
+            account_id = project.get("browser_account_id")
+            if account_id in type(self).active_accounts:
+                type(self).account_overlap = True
+            type(self).active_accounts.add(account_id)
             type(self).active += 1
             type(self).max_active = max(type(self).max_active, type(self).active)
-            type(self).started.append((url, project.get("browser_account_id")))
+            type(self).started.append((url, account_id))
             type(self).first_started.set()
         time.sleep(0.08)
         with self.lock:
             type(self).active -= 1
+            type(self).active_accounts.remove(account_id)
         return {"values": {"post_url": url}, "post_id": url.rsplit("/", 1)[-1], "raw": {}}
 
 
@@ -112,6 +121,23 @@ class RunnerControlsTests(unittest.TestCase):
         self.assertEqual(sorted(int(url.rsplit("/", 1)[-1]) for url, _ in FakeScraper.started), [2, 3, 4, 5])
         self.assertEqual(FakeScraper.max_active, 3)
         self.assertEqual({account_id for _, account_id in FakeScraper.started}, {1, 2, 3})
+        self.assertFalse(FakeScraper.account_overlap)
+
+    def test_one_worker_still_rotates_all_selected_accounts(self):
+        runner.RUNNING[103] = {"logs": []}
+        counts = {"total": 0, "success": 0, "failed": 0, "skipped": 0}
+        runner.run_post_project(self.project(8, 1), 103, None, counts)
+        self.assertEqual([account_id for _, account_id in FakeScraper.started], [1, 2, 3, 1, 2, 3, 1])
+        self.assertEqual(FakeScraper.max_active, 1)
+        self.assertFalse(FakeScraper.account_overlap)
+
+    def test_two_workers_rotate_three_accounts_without_account_overlap(self):
+        runner.RUNNING[104] = {"logs": []}
+        counts = {"total": 0, "success": 0, "failed": 0, "skipped": 0}
+        runner.run_post_project(self.project(8, 2), 104, None, counts)
+        self.assertEqual({account_id for _, account_id in FakeScraper.started}, {1, 2, 3})
+        self.assertEqual(FakeScraper.max_active, 2)
+        self.assertFalse(FakeScraper.account_overlap)
 
     def test_pause_blocks_new_rows_until_resume(self):
         runner.RUNNING[102] = {"logs": []}
@@ -149,6 +175,9 @@ class RunnerControlsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('name="end_row"'.encode(), response.data)
         self.assertIn('name="max_workers"'.encode(), response.data)
+        self.assertIn('value="swa"'.encode(), response.data)
+        self.assertIn('value="fra"'.encode(), response.data)
+        self.assertIn('value="Latin"'.encode(), response.data)
         rules = {rule.rule for rule in app.url_map.iter_rules()}
         self.assertIn("/runs/<int:run_id>/pause", rules)
         self.assertIn("/runs/<int:run_id>/resume", rules)

@@ -11,7 +11,9 @@ _TOOLS_CACHE = {"at": 0, "value": None}
 _TOOLS_CACHE_SECONDS = 60
 
 USER_TOOLS_DIR = DATA_DIR / "tools"
-TESSERACT_LANGS = ("eng", "por", "ara", "chi_sim")
+CORE_TESSERACT_LANGS = ("eng", "por", "ara", "chi_sim")
+OPTIONAL_TESSERACT_LANGS = ("swa", "fra", "Latin")
+TESSERACT_LANGS = CORE_TESSERACT_LANGS + OPTIONAL_TESSERACT_LANGS
 
 
 def first_existing(paths):

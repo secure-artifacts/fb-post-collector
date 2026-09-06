@@ -67,7 +67,7 @@ FACEBOOK_HOSTS = {"facebook.com", "www.facebook.com", "m.facebook.com", "fb.com"
 DEBUG_ROOT_DIR = DATA_DIR
 DEBUG_VIDEO_DIR = DEBUG_ROOT_DIR / "debug_videos"
 DEBUG_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
-SUPPORTED_OCR_LANGUAGES = {"eng", "por", "ara", "chi_sim"}
+SUPPORTED_OCR_LANGUAGES = {"eng", "por", "ara", "chi_sim", "swa", "fra", "Latin"}
 
 
 def now_text():

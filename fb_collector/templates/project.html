@@ -19,7 +19,7 @@
         <div class="col-12">
           <label class="form-label">抓取浏览器账号</label>
           <div class="alert alert-info py-2 small">
-            可选择多个独立 Chrome Profile。并发大于 1 时，每个工作线程固定使用一个账号，同一账号不会被两个线程同时占用。
+            可选择多个独立 Chrome Profile。并发数只控制同时抓取数量，所有已选账号都会持续轮询；同一账号不会被两个线程同时占用。
             <a href="{{ url_for('browser_accounts') }}">去管理浏览器账号</a>
           </div>
           {% if browser_accounts %}
@@ -106,7 +106,7 @@
               <option value="{{ count }}" {% if (project.max_workers or 1) == count %}selected{% endif %}>{{ count }} 路</option>
             {% endfor %}
           </select>
-          <span class="form-text">实际并发不会超过已选择的可用账号数。</span>
+          <span class="form-text">所有已选账号都会轮询；实际并发不会超过可用账号数。</span>
         </label>
         <div class="col-md-4 d-flex align-items-center">
           <div class="form-check mt-3">
@@ -172,6 +172,7 @@
               <option value="{{ code }}" {% if selected_ocr_language == code %}selected{% endif %}>{{ label }}{% if code %} ({{ code }}){% endif %}</option>
             {% endfor %}
           </select>
+          <span class="form-text">可选语言包可在“环境检测”页面按需下载，不会增大安装包。</span>
         </label>
         <label class="col-md-4 form-label">Whisper语言
           <select class="form-select form-select-sm mt-1" name="whisper_language">

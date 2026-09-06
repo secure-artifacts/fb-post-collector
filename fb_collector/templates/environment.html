@@ -85,10 +85,10 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-function toolRow(name, badgeHtml, path, version = "", component = "", available = true) {
+function toolRow(name, badgeHtml, path, version = "", component = "", available = true, actionLabel = "安装") {
   const detail = [path, version].filter(Boolean).join(" | ");
   const action = component && !available
-    ? `<button class="btn btn-outline-primary btn-sm install-component" data-component="${escapeHtml(component)}" type="button">安装</button>`
+    ? `<button class="btn btn-outline-primary btn-sm install-component" data-component="${escapeHtml(component)}" type="button">${escapeHtml(actionLabel)}</button>`
     : "";
   return `<tr><th>${escapeHtml(name)}</th><td>${badgeHtml}</td><td class="mono">${escapeHtml(detail)}</td><td>${action}</td></tr>`;
 }
@@ -114,6 +114,9 @@ function renderTools(tools) {
     toolRow("por语言包", languageBadge(tools.tesseract?.por), "", "", "tesseract", tools.tesseract?.por),
     toolRow("ara语言包", languageBadge(tools.tesseract?.ara), "", "", "tesseract", tools.tesseract?.ara),
     toolRow("chi_sim语言包", languageBadge(tools.tesseract?.chi_sim), "", "", "tesseract", tools.tesseract?.chi_sim),
+    toolRow("斯瓦希里语 OCR（swa）", languageBadge(tools.tesseract?.swa), "按需下载，不包含在安装包中", "", "tessdata_swa", tools.tesseract?.swa, "下载语言包"),
+    toolRow("法语 OCR（fra）", languageBadge(tools.tesseract?.fra), "按需下载，不包含在安装包中", "", "tessdata_fra", tools.tesseract?.fra, "下载语言包"),
+    toolRow("马达加斯加语 OCR（Latin）", languageBadge(tools.tesseract?.Latin), "官方无专用模型，使用通用拉丁文字包", "", "tessdata_latin", tools.tesseract?.Latin, "下载语言包"),
     toolRow("ffmpeg", statusBadge(tools.ffmpeg?.available), tools.ffmpeg?.path, "", "ffmpeg", tools.ffmpeg?.available),
     toolRow("whisper", statusBadge(tools.whisper?.available), tools.whisper?.path, tools.whisper?.version, "whisper", tools.whisper?.available),
     toolRow("yt-dlp", statusBadge(tools.yt_dlp?.available), tools.yt_dlp?.path, tools.yt_dlp?.version, "yt_dlp", tools.yt_dlp?.available)

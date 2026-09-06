@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..config import DATA_DIR, TOOLS_DIR
-from .environment import TESSERACT_LANGS, detect_tools
+from .environment import CORE_TESSERACT_LANGS, detect_tools
 
 
 INSTALL_LOG_PATH = DATA_DIR / "component_install.log"
@@ -28,6 +28,9 @@ COMPONENT_LABELS = {
     "ffmpeg": "ffmpeg",
     "whisper": "Whisper语音识别",
     "yt_dlp": "yt-dlp",
+    "tessdata_swa": "斯瓦希里语 OCR 语言包",
+    "tessdata_fra": "法语 OCR 语言包",
+    "tessdata_latin": "马达加斯加语 OCR 通用拉丁文字包",
 }
 WINGET_PACKAGES = {
     "tesseract": "UB-Mannheim.TesseractOCR",
@@ -39,6 +42,14 @@ TESSDATA_URLS = {
     "por": "https://github.com/tesseract-ocr/tessdata/raw/main/por.traineddata",
     "ara": "https://github.com/tesseract-ocr/tessdata/raw/main/ara.traineddata",
     "chi_sim": "https://github.com/tesseract-ocr/tessdata/raw/main/chi_sim.traineddata",
+    "swa": "https://github.com/tesseract-ocr/tessdata/raw/main/swa.traineddata",
+    "fra": "https://github.com/tesseract-ocr/tessdata/raw/main/fra.traineddata",
+    "Latin": "https://github.com/tesseract-ocr/tessdata/raw/main/script/Latin.traineddata",
+}
+LANGUAGE_COMPONENTS = {
+    "tessdata_swa": "swa",
+    "tessdata_fra": "fra",
+    "tessdata_latin": "Latin",
 }
 YT_DLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
 
@@ -115,6 +126,8 @@ def _install_worker(components):
 
 def install_one(component):
     label = COMPONENT_LABELS[component]
+    if component in LANGUAGE_COMPONENTS:
+        return install_language_pack(component, LANGUAGE_COMPONENTS[component])
     if component == "tesseract":
         return install_tesseract()
     if component == "yt_dlp":
@@ -217,7 +230,7 @@ def install_tesseract():
             }
         tools = detect_tools(force=True)
     tessdata = writable_tessdata_dir(tools["tesseract"].get("path") or "")
-    missing = [lang for lang in TESSERACT_LANGS if not tools["tesseract"].get(lang)]
+    missing = [lang for lang in CORE_TESSERACT_LANGS if not tools["tesseract"].get(lang)]
     for lang in missing:
         dest = tessdata / f"{lang}.traineddata"
         if dest.exists():
@@ -225,13 +238,44 @@ def install_tesseract():
         download_file(TESSDATA_URLS[lang], dest)
         notes.append(f"已下载语言包 {lang}")
     tools = detect_tools(force=True)
-    complete = tools["tesseract"]["available"] and all(tools["tesseract"].get(lang) for lang in TESSERACT_LANGS)
+    complete = tools["tesseract"]["available"] and all(tools["tesseract"].get(lang) for lang in CORE_TESSERACT_LANGS)
     return {
         "component": "tesseract",
         "label": COMPONENT_LABELS["tesseract"],
         "success": complete,
         "returncode": 0 if complete else -1,
         "output": "\n".join(part for part in notes if part) or ("Tesseract 及语言包已就绪" if complete else "语言包安装未完成"),
+    }
+
+
+def install_language_pack(component, language):
+    tools = detect_tools(force=True)
+    notes = []
+    if not tools["tesseract"]["available"]:
+        base_result = install_tesseract()
+        notes.append(base_result.get("output") or "")
+        if not base_result["success"]:
+            return {
+                "component": component,
+                "label": COMPONENT_LABELS[component],
+                "success": False,
+                "returncode": base_result.get("returncode", -1),
+                "output": "\n".join(part for part in notes if part),
+            }
+        tools = detect_tools(force=True)
+    tessdata = writable_tessdata_dir(tools["tesseract"].get("path") or "")
+    destination = tessdata / f"{language}.traineddata"
+    if not destination.exists():
+        download_file(TESSDATA_URLS[language], destination)
+        notes.append(f"已下载语言包 {language} 到 {destination}")
+    tools = detect_tools(force=True)
+    success = bool(tools["tesseract"].get(language))
+    return {
+        "component": component,
+        "label": COMPONENT_LABELS[component],
+        "success": success,
+        "returncode": 0 if success else -1,
+        "output": "\n".join(part for part in notes if part) or ("语言包已就绪" if success else "语言包安装未完成"),
     }
 
 

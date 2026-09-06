@@ -409,7 +409,8 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
     configured_workers = min(3, max(1, int(project.get("max_workers") or 1)))
     worker_count = min(configured_workers, len(accounts)) if accounts else 1
     range_text = f"第 {start_row}–{end_row} 行" if end_row else f"第 {start_row} 行到末尾"
-    note_progress(run_id, counts, f"执行范围：{range_text}；并发 {worker_count} 路；待抓取 {len(candidate_rows)} 行")
+    account_text = f"{len(accounts)} 个账号轮询" if accounts else "未选择账号"
+    note_progress(run_id, counts, f"执行范围：{range_text}；并发 {worker_count} 路；{account_text}；待抓取 {len(candidate_rows)} 行")
     if worker_count > 1:
         # 并发完成顺序不固定。发生停止或失败时从区间起点重扫，成功行会由日志列/写入列自动跳过。
         db.set_resume_row(project["id"], max(0, start_row - 1))
@@ -417,6 +418,9 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
     work_queue = queue.Queue()
     for row in candidate_rows:
         work_queue.put(row)
+    account_queue = queue.Queue()
+    for account in accounts or [None]:
+        account_queue.put(account)
     counts_lock = threading.Lock()
     retry_lock = threading.Lock()
     worker_error_lock = threading.Lock()
@@ -435,14 +439,9 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
                 first_retry_row["value"] = int(row_number)
                 db.set_resume_row(project["id"], max(start_row - 1, int(row_number) - 1))
 
-    def worker(account):
+    def worker():
         worker_sheets = SheetsClient()
         scraper = FacebookScraper()
-        active_project = dict(project)
-        if account:
-            active_project["browser_account_id"] = account["id"]
-            active_project["browser_account"] = account
-        account_name = (active_project.get("browser_account") or {}).get("name") or "未选择账号"
         while wait_until_runnable(run_id):
             try:
                 row = work_queue.get_nowait()
@@ -453,16 +452,22 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
                 work_queue.task_done()
                 return
             url = row["url"]
-            current_counts = change_count("total")
-            note_progress(
-                run_id,
-                current_counts,
-                f"正在抓取第 {row['row_number']} 行（账号：{account_name}） {short_url(url)}",
-                status="running",
-                row_number=row["row_number"],
-                url=url,
-            )
+            account = account_queue.get()
             try:
+                active_project = dict(project)
+                if account:
+                    active_project["browser_account_id"] = account["id"]
+                    active_project["browser_account"] = account
+                account_name = (active_project.get("browser_account") or {}).get("name") or "未选择账号"
+                current_counts = change_count("total")
+                note_progress(
+                    run_id,
+                    current_counts,
+                    f"正在抓取第 {row['row_number']} 行（账号：{account_name}） {short_url(url)}",
+                    status="running",
+                    row_number=row["row_number"],
+                    url=url,
+                )
                 result = scraper.scrape(url, active_project)
                 result["values"]["post_url"] = result["values"].get("post_url") or url
                 result["written"] = write_field_row(
@@ -526,17 +531,17 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
                 )
                 mark_retry(row["row_number"])
             finally:
+                account_queue.put(account)
                 work_queue.task_done()
 
-    def guarded_worker(account):
+    def guarded_worker():
         try:
-            worker(account)
+            worker()
         except Exception as exc:
             with worker_error_lock:
                 worker_errors.append(exc)
 
-    selected_accounts = accounts[:worker_count] if accounts else [None]
-    threads = [threading.Thread(target=guarded_worker, args=(account,), daemon=True) for account in selected_accounts]
+    threads = [threading.Thread(target=guarded_worker, daemon=True) for _ in range(worker_count)]
     for thread in threads:
         thread.start()
     for thread in threads:

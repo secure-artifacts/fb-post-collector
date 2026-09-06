@@ -137,6 +137,9 @@ OCR_LANGUAGE_OPTIONS = [
     ("eng", "英文"),
     ("ara", "阿拉伯语"),
     ("chi_sim", "中文简体"),
+    ("swa", "斯瓦希里语"),
+    ("fra", "法语"),
+    ("Latin", "马达加斯加语（通用拉丁文字）"),
 ]
 
 
@@ -724,7 +727,7 @@ def normalize_project_form(data, account_ids=None):
 
 
 def normalize_ocr_language(value):
-    if value in {"eng", "por", "ara", "chi_sim"}:
+    if value in {"eng", "por", "ara", "chi_sim", "swa", "fra", "Latin"}:
         return value
     if value and "+" in value:
         return "por" if "por" in value.split("+") else value.split("+")[0]
