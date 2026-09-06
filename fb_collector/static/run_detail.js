@@ -1,5 +1,6 @@
 const statusLabel = {
   running: "运行中",
+  paused: "已暂停",
   stopping: "正在停止",
   stopped: "已停止",
   success: "成功",
@@ -11,6 +12,7 @@ const statusLabel = {
 
 const statusBadge = {
   running: "text-bg-primary",
+  paused: "text-bg-info",
   stopping: "text-bg-warning",
   stopped: "text-bg-secondary",
   success: "text-bg-success",
@@ -46,11 +48,23 @@ async function refreshDetail() {
     const failed = document.querySelector("#detail-failed");
     const message = document.querySelector("#detail-message");
     const logBox = document.querySelector("#run-log");
+    const actions = document.querySelector("#detail-actions");
     if (statusBox) statusBox.innerHTML = badge(data.status);
     if (total) total.textContent = counts.total || 0;
     if (success) success.textContent = counts.success || 0;
     if (failed) failed.textContent = counts.failed || 0;
     if (message) message.textContent = data.message || "";
+    if (actions) {
+      if (data.status === "running") {
+        actions.innerHTML = `<form action="${window.RUN_ACTION_BASE}/pause" method="post" class="inline"><button class="btn btn-info btn-sm" type="submit">暂停</button></form> <form action="${window.RUN_ACTION_BASE}/stop" method="post" class="inline"><button class="btn btn-warning btn-sm" type="submit">停止</button></form>`;
+      } else if (data.status === "paused") {
+        actions.innerHTML = `<form action="${window.RUN_ACTION_BASE}/resume" method="post" class="inline"><button class="btn btn-success btn-sm" type="submit">继续</button></form> <form action="${window.RUN_ACTION_BASE}/stop" method="post" class="inline"><button class="btn btn-warning btn-sm" type="submit">停止</button></form>`;
+      } else if (data.status === "stopping") {
+        actions.innerHTML = `<button class="btn btn-warning btn-sm" type="button" disabled>正在停止</button>`;
+      } else {
+        actions.innerHTML = "";
+      }
+    }
     if (logBox) {
       const logs = data.logs || [];
       const nearBottom = logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight < 60;
@@ -61,7 +75,7 @@ async function refreshDetail() {
       </div>`).join("") || '<div class="text-secondary small px-2 py-3">等待抓取日志...</div>';
       if (nearBottom) logBox.scrollTop = logBox.scrollHeight;
     }
-    if (!["running", "stopping"].includes(data.status) && window._runLiveTimer) {
+    if (!["running", "paused", "stopping"].includes(data.status) && window._runLiveTimer) {
       clearInterval(window._runLiveTimer);
     }
   } catch (error) {

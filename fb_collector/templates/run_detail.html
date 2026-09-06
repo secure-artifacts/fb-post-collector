@@ -2,17 +2,29 @@
 {% block content %}
 <script>
 window.RUN_LIVE_URL = "{{ url_for('api_run_live', run_id=run_id) }}";
+window.RUN_ACTION_BASE = "{{ url_for('runs') }}/{{ run_id }}";
 </script>
 <script src="{{ url_for('static', filename='run_detail.js') }}"></script>
 <section class="card shadow-sm">
   <div class="card-body">
     <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap mb-3">
       <h1 class="h3 mb-0">运行详情 #{{ run_id }}</h1>
-      {% if run and run.status in ['running', 'stopping'] %}
-        <form action="{{ url_for('run_stop', run_id=run_id) }}" method="post" class="inline">
-          <button class="btn btn-warning btn-sm" type="submit" {% if run.status == 'stopping' %}disabled{% endif %}>停止</button>
-        </form>
-      {% endif %}
+      <div id="detail-actions">
+        {% if run and run.status in ['running', 'paused', 'stopping'] %}
+          {% if run.status == 'paused' %}
+            <form action="{{ url_for('run_resume', run_id=run_id) }}" method="post" class="inline">
+              <button class="btn btn-success btn-sm" type="submit">继续</button>
+            </form>
+          {% elif run.status == 'running' %}
+            <form action="{{ url_for('run_pause', run_id=run_id) }}" method="post" class="inline">
+              <button class="btn btn-info btn-sm" type="submit">暂停</button>
+            </form>
+          {% endif %}
+          <form action="{{ url_for('run_stop', run_id=run_id) }}" method="post" class="inline">
+            <button class="btn btn-warning btn-sm" type="submit" {% if run.status == 'stopping' %}disabled{% endif %}>停止</button>
+          </form>
+        {% endif %}
+      </div>
     </div>
     {% if run %}
       <div class="border rounded-3 p-3 mb-3 bg-light">

@@ -19,7 +19,7 @@
         <div class="col-12">
           <label class="form-label">抓取浏览器账号</label>
           <div class="alert alert-info py-2 small">
-            可选择多个独立 Chrome Profile。抓取贴文时会按选中顺序逐条轮询账号，降低单账号连续请求压力。
+            可选择多个独立 Chrome Profile。并发大于 1 时，每个工作线程固定使用一个账号，同一账号不会被两个线程同时占用。
             <a href="{{ url_for('browser_accounts') }}">去管理浏览器账号</a>
           </div>
           {% if browser_accounts %}
@@ -78,8 +78,13 @@
         <label class="col-md-2 form-label">表头行
           <input class="form-control form-control-sm mt-1" name="header_row" type="number" value="{{ project.header_row }}">
         </label>
-        <label class="col-md-2 form-label">数据开始行
-          <input class="form-control form-control-sm mt-1" name="start_row" type="number" value="{{ project.start_row }}">
+        <label class="col-md-2 form-label">执行开始行
+          <input class="form-control form-control-sm mt-1" name="start_row" type="number" min="1" value="{{ project.start_row }}">
+          <span class="form-text">包含这一行。</span>
+        </label>
+        <label class="col-md-2 form-label">执行结束行
+          <input class="form-control form-control-sm mt-1" name="end_row" type="number" min="0" value="{{ project.end_row or 0 }}">
+          <span class="form-text">包含这一行；0 表示到末尾。</span>
         </label>
         <label class="col-md-2 form-label">写入开始列
           <input class="form-control form-control-sm mt-1" id="write-start-column" name="write_start_column" value="{{ project.write_start_column }}">
@@ -94,6 +99,14 @@
             <option value="overwrite" {% if project.rerun_policy == 'overwrite' %}selected{% endif %}>覆盖重抓</option>
             <option value="retry_failed" {% if project.rerun_policy == 'retry_failed' %}selected{% endif %}>只重试失败</option>
           </select>
+        </label>
+        <label class="col-md-2 form-label">并发抓取数
+          <select class="form-select form-select-sm mt-1" name="max_workers">
+            {% for count in [1, 2, 3] %}
+              <option value="{{ count }}" {% if (project.max_workers or 1) == count %}selected{% endif %}>{{ count }} 路</option>
+            {% endfor %}
+          </select>
+          <span class="form-text">实际并发不会超过已选择的可用账号数。</span>
         </label>
         <div class="col-md-4 d-flex align-items-center">
           <div class="form-check mt-3">
@@ -111,7 +124,7 @@
           </div>
           {% else %}
           <div class="alert alert-light py-2 small mb-0">
-            断点：当前没有未完成进度，下次从数据开始行执行。中途停止后会记住行号，下次从下一行继续。
+            断点：当前没有未完成进度，下次从执行开始行运行。并发任务中途停止后会重扫本区间，已完成行仍会按日志列或写入列自动跳过。
           </div>
           {% endif %}
         </div>

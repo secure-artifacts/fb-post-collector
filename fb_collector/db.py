@@ -46,6 +46,8 @@ def init_db():
                 link_column TEXT NOT NULL DEFAULT 'A',
                 header_row INTEGER NOT NULL DEFAULT 1,
                 start_row INTEGER NOT NULL DEFAULT 2,
+                end_row INTEGER NOT NULL DEFAULT 0,
+                max_workers INTEGER NOT NULL DEFAULT 1,
                 write_start_column TEXT NOT NULL DEFAULT 'B',
                 processed_log_column TEXT NOT NULL DEFAULT 'AK',
                 skip_existing_write_data INTEGER NOT NULL DEFAULT 1,
@@ -157,6 +159,8 @@ def init_db():
         ensure_column(conn, "projects", "processed_log_column", "TEXT NOT NULL DEFAULT 'AK'")
         ensure_column(conn, "projects", "skip_existing_write_data", "INTEGER NOT NULL DEFAULT 1")
         ensure_column(conn, "projects", "resume_after_row", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "projects", "end_row", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "projects", "max_workers", "INTEGER NOT NULL DEFAULT 1")
         ensure_column(conn, "project_fields", "write_column", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "browser_accounts", "debug_enabled", "INTEGER NOT NULL DEFAULT 0")
         ensure_missing_project_fields(conn)
@@ -180,7 +184,7 @@ def close_stale_runs(conn):
                 WHEN error_message IS NULL OR error_message = '' THEN '软件重启，上次运行中断'
                 ELSE error_message
             END
-        WHERE status IN ('running', 'stopping')
+        WHERE status IN ('running', 'paused', 'stopping')
         """,
         (utc_now(),),
     )
@@ -331,6 +335,8 @@ def update_project(project_id, data):
         "link_column",
         "header_row",
         "start_row",
+        "end_row",
+        "max_workers",
         "write_start_column",
         "processed_log_column",
         "skip_existing_write_data",

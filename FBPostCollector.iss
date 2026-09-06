@@ -1,5 +1,5 @@
 #define AppName "Facebook 贴文数据采集工具"
-#define AppVersion "1.3.6"
+#define AppVersion "1.4.0"
 #define AppPublisher "FBPostCollector"
 #define AppExeName "FBPostCollector.exe"
 #ifndef OutputDir

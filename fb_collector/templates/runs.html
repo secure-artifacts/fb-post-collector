@@ -57,7 +57,16 @@
             <td>{{ run.skipped_rows }}</td>
             <td>{{ run.error_message }}</td>
             <td class="text-center">
-              {% if run.status in ['running', 'stopping'] %}
+              {% if run.status in ['running', 'paused', 'stopping'] %}
+                {% if run.status == 'paused' %}
+                  <form action="{{ url_for('run_resume', run_id=run.id) }}" method="post" class="inline">
+                    <button class="btn btn-success btn-sm" type="submit">继续</button>
+                  </form>
+                {% elif run.status == 'running' %}
+                  <form action="{{ url_for('run_pause', run_id=run.id) }}" method="post" class="inline">
+                    <button class="btn btn-info btn-sm" type="submit">暂停</button>
+                  </form>
+                {% endif %}
                 <form action="{{ url_for('run_stop', run_id=run.id) }}" method="post" class="inline">
                   <button class="btn btn-warning btn-sm" type="submit" {% if run.status == 'stopping' %}disabled{% endif %}>停止</button>
                 </form>

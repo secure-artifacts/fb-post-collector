@@ -1,5 +1,6 @@
 const statusLabel = {
   running: "运行中",
+  paused: "已暂停",
   stopping: "正在停止",
   stopped: "已停止",
   success: "成功",
@@ -11,6 +12,7 @@ const statusLabel = {
 
 const statusBadge = {
   running: "text-bg-primary",
+  paused: "text-bg-info",
   stopping: "text-bg-warning",
   stopped: "text-bg-secondary",
   success: "text-bg-success",
@@ -72,7 +74,7 @@ function renderActive(active) {
     renderLog([]);
     return;
   }
-  const live = ["running", "stopping"].includes(active.status);
+  const live = ["running", "paused", "stopping"].includes(active.status);
   title.textContent = live
     ? `正在运行 #${active.id} ${active.project_name || ""}`.trim()
     : `最近一次 #${active.id} ${active.project_name || ""}`.trim();
@@ -83,7 +85,12 @@ function renderActive(active) {
   }
   if (live) {
     const stopping = active.status === "stopping";
-    stopBox.innerHTML = `<form action="${window.RUNS_BASE}/${active.id}/stop" method="post" class="inline">
+    const pauseControl = active.status === "running"
+      ? `<form action="${window.RUNS_BASE}/${active.id}/pause" method="post" class="inline"><button class="btn btn-info btn-sm" type="submit">暂停</button></form>`
+      : active.status === "paused"
+        ? `<form action="${window.RUNS_BASE}/${active.id}/resume" method="post" class="inline"><button class="btn btn-success btn-sm" type="submit">继续</button></form>`
+        : "";
+    stopBox.innerHTML = `${pauseControl} <form action="${window.RUNS_BASE}/${active.id}/stop" method="post" class="inline">
       <button class="btn btn-warning btn-sm" type="submit" ${stopping ? "disabled" : ""}>停止</button>
     </form>`;
   } else {
@@ -101,8 +108,13 @@ function renderRuns(runs) {
     return;
   }
   body.innerHTML = runs.map((run) => {
-    const stop = ["running", "stopping"].includes(run.status)
-      ? `<form action="${window.RUNS_BASE}/${run.id}/stop" method="post" class="inline">
+    const pauseControl = run.status === "running"
+      ? `<form action="${window.RUNS_BASE}/${run.id}/pause" method="post" class="inline"><button class="btn btn-info btn-sm" type="submit">暂停</button></form>`
+      : run.status === "paused"
+        ? `<form action="${window.RUNS_BASE}/${run.id}/resume" method="post" class="inline"><button class="btn btn-success btn-sm" type="submit">继续</button></form>`
+        : "";
+    const stop = ["running", "paused", "stopping"].includes(run.status)
+      ? `${pauseControl} <form action="${window.RUNS_BASE}/${run.id}/stop" method="post" class="inline">
            <button class="btn btn-warning btn-sm" type="submit" ${run.status === "stopping" ? "disabled" : ""}>停止</button>
          </form>`
       : "";

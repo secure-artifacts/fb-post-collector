@@ -1,5 +1,7 @@
 import json
+import queue
 import re
+import threading
 import time
 import traceback
 from collections import defaultdict
@@ -16,6 +18,7 @@ from .services.sheets import SheetsClient, extract_spreadsheet_id
 
 RUNNING = {}
 STOP_REQUESTS = set()
+PAUSE_REQUESTS = set()
 PROFILE_LOCKS = defaultdict(lambda: False)
 MAX_RUN_LOGS = 400
 
@@ -193,7 +196,9 @@ def extract_profile_id(url, html=""):
 
 
 def request_stop(run_id):
-    STOP_REQUESTS.add(int(run_id))
+    run_id = int(run_id)
+    STOP_REQUESTS.add(run_id)
+    PAUSE_REQUESTS.discard(run_id)
     db.update_task_run_status(run_id, "stopping")
     if run_id in RUNNING:
         RUNNING[run_id]["status"] = "stopping"
@@ -202,6 +207,34 @@ def request_stop(run_id):
 
 def should_stop(run_id):
     return int(run_id) in STOP_REQUESTS
+
+
+def request_pause(run_id):
+    run_id = int(run_id)
+    if should_stop(run_id):
+        return
+    PAUSE_REQUESTS.add(run_id)
+    db.update_task_run_status(run_id, "paused")
+    if run_id in RUNNING:
+        RUNNING[run_id]["status"] = "paused"
+        append_run_log(run_id, "任务已暂停；正在处理的贴文完成后，不再领取新行", status="paused")
+
+
+def request_resume(run_id):
+    run_id = int(run_id)
+    PAUSE_REQUESTS.discard(run_id)
+    db.update_task_run_status(run_id, "running")
+    if run_id in RUNNING:
+        RUNNING[run_id]["status"] = "running"
+        append_run_log(run_id, "任务已继续运行", status="running")
+
+
+def wait_until_runnable(run_id):
+    while int(run_id) in PAUSE_REQUESTS:
+        if should_stop(run_id):
+            return False
+        time.sleep(0.25)
+    return not should_stop(run_id)
 
 
 def run_project(project_id, task_id=None, policy_override="", run_id=None):
@@ -231,6 +264,8 @@ def run_project(project_id, task_id=None, policy_override="", run_id=None):
             RUNNING[run_id]["status"] = "stopped"
             STOP_REQUESTS.discard(run_id)
             return run_id
+        if not wait_until_runnable(run_id):
+            continue
         note_progress(run_id, counts, "等待同一个抓取浏览器账号的其他任务完成")
         time.sleep(2)
     for key in lock_keys:
@@ -248,7 +283,8 @@ def run_project(project_id, task_id=None, policy_override="", run_id=None):
             final_status = "success" if counts["failed"] == 0 else "finished_with_errors"
             message = "运行完成"
             error_message = ""
-            db.set_resume_row(project["id"], 0)
+            if counts["failed"] == 0:
+                db.set_resume_row(project["id"], 0)
         db.finish_task_run(run_id, final_status, counts, error_message)
         summary = f"{message}：抓取 {counts['total']}，成功 {counts['success']}，失败 {counts['failed']}，跳过 {counts['skipped']}"
         note_progress(run_id, counts, summary, status=final_status)
@@ -269,24 +305,27 @@ def run_project(project_id, task_id=None, policy_override="", run_id=None):
         return run_id
     finally:
         STOP_REQUESTS.discard(run_id)
+        PAUSE_REQUESTS.discard(run_id)
         for key in lock_keys:
             PROFILE_LOCKS[key] = False
 
 
 def run_post_project(project, run_id, task_id, counts, policy_override=""):
     sheets = SheetsClient()
-    scraper = FacebookScraper()
     spreadsheet_id = project.get("spreadsheet_id") or extract_spreadsheet_id(project.get("spreadsheet_url", ""))
     fields = enabled_fields(project)
     status_col = status_column(fields)
     if fields:
         write_field_headers(sheets, spreadsheet_id, project["worksheet_name"], project["header_row"], fields)
-    rows = sheets.read_column(spreadsheet_id, project["worksheet_name"], project["link_column"], project["start_row"])
+    start_row = int(project.get("start_row") or 2)
+    end_row = int(project.get("end_row") or 0)
+    rows = sheets.read_column(spreadsheet_id, project["worksheet_name"], project["link_column"], start_row)
+    if end_row:
+        rows = [row for row in rows if int(row["row_number"]) <= end_row]
     policy = policy_override or project.get("rerun_policy") or "skip_done"
     processed_log_column = normalize_column(project.get("processed_log_column"))
     write_start_column = normalize_column(project.get("write_start_column"), "B")
     skip_existing_write_data = bool(int(project.get("skip_existing_write_data", 1) or 0))
-    start_row = int(project.get("start_row") or 2)
     log_map = (
         sheets.read_column_values(spreadsheet_id, project["worksheet_name"], processed_log_column, start_row)
         if processed_log_column and policy != "overwrite"
@@ -303,12 +342,11 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
         else {}
     )
     resume_after = int(project.get("resume_after_row") or 0)
-    first_retry_row = None
+    candidate_rows = []
     if resume_after > 0:
         note_progress(run_id, counts, f"从断点继续：跳过第 {resume_after} 行及之前的行，从第 {resume_after + 1} 行开始")
-    rotation_index = 0
     for row in rows:
-        if should_stop(run_id):
+        if not wait_until_runnable(run_id):
             break
         url = row["url"]
         if not url:
@@ -335,8 +373,6 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
                     row_number=row["row_number"],
                     url=url,
                 )
-                if first_retry_row is None:
-                    db.set_resume_row(project["id"], row["row_number"])
                 continue
         if policy in {"skip_done", "retry_failed"} and status_col:
             existing_status = str(status_map.get(row["row_number"]) or "").strip()
@@ -351,8 +387,6 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
                     row_number=row["row_number"],
                     url=url,
                 )
-                if first_retry_row is None:
-                    db.set_resume_row(project["id"], row["row_number"])
                 continue
             if policy == "retry_failed" and existing_status not in {"失败", "ERROR", "failed"}:
                 counts["skipped"] += 1
@@ -365,89 +399,150 @@ def run_post_project(project, run_id, task_id, counts, policy_override=""):
                     row_number=row["row_number"],
                     url=url,
                 )
-                if first_retry_row is None:
-                    db.set_resume_row(project["id"], row["row_number"])
                 continue
-        counts["total"] += 1
-        active_project = project_for_account(project, rotation_index)
-        rotation_index += 1
+        candidate_rows.append(row)
+
+    if should_stop(run_id) or not candidate_rows:
+        return
+
+    accounts = available_browser_accounts(project)
+    configured_workers = min(3, max(1, int(project.get("max_workers") or 1)))
+    worker_count = min(configured_workers, len(accounts)) if accounts else 1
+    range_text = f"第 {start_row}–{end_row} 行" if end_row else f"第 {start_row} 行到末尾"
+    note_progress(run_id, counts, f"执行范围：{range_text}；并发 {worker_count} 路；待抓取 {len(candidate_rows)} 行")
+    if worker_count > 1:
+        # 并发完成顺序不固定。发生停止或失败时从区间起点重扫，成功行会由日志列/写入列自动跳过。
+        db.set_resume_row(project["id"], max(0, start_row - 1))
+
+    work_queue = queue.Queue()
+    for row in candidate_rows:
+        work_queue.put(row)
+    counts_lock = threading.Lock()
+    retry_lock = threading.Lock()
+    worker_error_lock = threading.Lock()
+    worker_errors = []
+    first_retry_row = {"value": None}
+
+    def change_count(key):
+        with counts_lock:
+            counts[key] += 1
+            return dict(counts)
+
+    def mark_retry(row_number):
+        with retry_lock:
+            current = first_retry_row["value"]
+            if current is None or int(row_number) < current:
+                first_retry_row["value"] = int(row_number)
+                db.set_resume_row(project["id"], max(start_row - 1, int(row_number) - 1))
+
+    def worker(account):
+        worker_sheets = SheetsClient()
+        scraper = FacebookScraper()
+        active_project = dict(project)
+        if account:
+            active_project["browser_account_id"] = account["id"]
+            active_project["browser_account"] = account
         account_name = (active_project.get("browser_account") or {}).get("name") or "未选择账号"
-        note_progress(
-            run_id,
-            counts,
-            f"正在抓取第 {row['row_number']} 行（账号：{account_name}） {short_url(url)}",
-            status="running",
-            row_number=row["row_number"],
-            url=url,
-        )
+        while wait_until_runnable(run_id):
+            try:
+                row = work_queue.get_nowait()
+            except queue.Empty:
+                return
+            if not wait_until_runnable(run_id):
+                work_queue.put(row)
+                work_queue.task_done()
+                return
+            url = row["url"]
+            current_counts = change_count("total")
+            note_progress(
+                run_id,
+                current_counts,
+                f"正在抓取第 {row['row_number']} 行（账号：{account_name}） {short_url(url)}",
+                status="running",
+                row_number=row["row_number"],
+                url=url,
+            )
+            try:
+                result = scraper.scrape(url, active_project)
+                result["values"]["post_url"] = result["values"].get("post_url") or url
+                result["written"] = write_field_row(
+                    worker_sheets,
+                    spreadsheet_id,
+                    project["worksheet_name"],
+                    row["row_number"],
+                    fields,
+                    result["values"],
+                )
+                result.setdefault("raw", {})["browser_account_id"] = active_project.get("browser_account_id")
+                result["raw"]["browser_account_name"] = account_name
+                if processed_log_column:
+                    marker = f"已抓取 | {result.get('post_id') or result['values'].get('post_id') or ''} | {now_text()}"
+                    try:
+                        worker_sheets.write_cell(
+                            spreadsheet_id,
+                            project["worksheet_name"],
+                            processed_log_column,
+                            row["row_number"],
+                            marker,
+                        )
+                        result["written"]["processed_log"] = marker
+                    except Exception as exc:
+                        result["raw"]["processed_log_error"] = repr(exc)
+                db.add_row_run(run_id, row["row_number"], url, result)
+                current_counts = change_count("success")
+                note_progress(
+                    run_id,
+                    current_counts,
+                    f"第 {row['row_number']} 行抓取成功（账号：{account_name}）",
+                    status="success",
+                    row_number=row["row_number"],
+                    url=url,
+                )
+                if worker_count == 1 and first_retry_row["value"] is None:
+                    db.set_resume_row(project["id"], row["row_number"])
+            except UserVisibleError as exc:
+                write_post_failure(worker_sheets, spreadsheet_id, project, fields, row, run_id, exc.user_message, exc.technical)
+                current_counts = change_count("failed")
+                note_progress(
+                    run_id,
+                    current_counts,
+                    f"第 {row['row_number']} 行失败：{exc.user_message}",
+                    status="failed",
+                    row_number=row["row_number"],
+                    url=url,
+                )
+                mark_retry(row["row_number"])
+            except Exception as exc:
+                user_error = "抓取失败，请查看运行记录"
+                write_post_failure(worker_sheets, spreadsheet_id, project, fields, row, run_id, user_error, "".join(traceback.format_exception(exc)))
+                current_counts = change_count("failed")
+                note_progress(
+                    run_id,
+                    current_counts,
+                    f"第 {row['row_number']} 行失败：{user_error}",
+                    status="failed",
+                    row_number=row["row_number"],
+                    url=url,
+                )
+                mark_retry(row["row_number"])
+            finally:
+                work_queue.task_done()
+
+    def guarded_worker(account):
         try:
-            result = scraper.scrape(url, active_project)
-            result["values"]["post_url"] = result["values"].get("post_url") or url
-            result["written"] = write_field_row(
-                sheets,
-                spreadsheet_id,
-                project["worksheet_name"],
-                row["row_number"],
-                fields,
-                result["values"],
-            )
-            result.setdefault("raw", {})["browser_account_id"] = active_project.get("browser_account_id")
-            result["raw"]["browser_account_name"] = account_name
-            if processed_log_column:
-                marker = f"已抓取 | {result.get('post_id') or result['values'].get('post_id') or ''} | {now_text()}"
-                try:
-                    sheets.write_cell(
-                        spreadsheet_id,
-                        project["worksheet_name"],
-                        processed_log_column,
-                        row["row_number"],
-                        marker,
-                    )
-                    result["written"]["processed_log"] = marker
-                    log_map[row["row_number"]] = marker
-                except Exception as exc:
-                    result["raw"]["processed_log_error"] = repr(exc)
-            db.add_row_run(run_id, row["row_number"], url, result)
-            counts["success"] += 1
-            note_progress(
-                run_id,
-                counts,
-                f"第 {row['row_number']} 行抓取成功（账号：{account_name}）",
-                status="success",
-                row_number=row["row_number"],
-                url=url,
-            )
-            if first_retry_row is None:
-                db.set_resume_row(project["id"], row["row_number"])
-        except UserVisibleError as exc:
-            write_post_failure(sheets, spreadsheet_id, project, fields, row, run_id, exc.user_message, exc.technical)
-            counts["failed"] += 1
-            note_progress(
-                run_id,
-                counts,
-                f"第 {row['row_number']} 行失败：{exc.user_message}",
-                status="failed",
-                row_number=row["row_number"],
-                url=url,
-            )
-            if first_retry_row is None:
-                first_retry_row = int(row["row_number"])
-                db.set_resume_row(project["id"], max(start_row - 1, first_retry_row - 1))
+            worker(account)
         except Exception as exc:
-            user_error = "抓取失败，请查看运行记录"
-            write_post_failure(sheets, spreadsheet_id, project, fields, row, run_id, user_error, "".join(traceback.format_exception(exc)))
-            counts["failed"] += 1
-            note_progress(
-                run_id,
-                counts,
-                f"第 {row['row_number']} 行失败：{user_error}",
-                status="failed",
-                row_number=row["row_number"],
-                url=url,
-            )
-            if first_retry_row is None:
-                first_retry_row = int(row["row_number"])
-                db.set_resume_row(project["id"], max(start_row - 1, first_retry_row - 1))
+            with worker_error_lock:
+                worker_errors.append(exc)
+
+    selected_accounts = accounts[:worker_count] if accounts else [None]
+    threads = [threading.Thread(target=guarded_worker, args=(account,), daemon=True) for account in selected_accounts]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    if worker_errors:
+        raise worker_errors[0]
 
 
 def existing_row_skip_reason(

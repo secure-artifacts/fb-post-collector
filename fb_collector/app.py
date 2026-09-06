@@ -14,7 +14,7 @@ from flask import Flask, flash, jsonify, redirect, render_template, request, url
 from . import db
 from .config import APP_VERSION
 from .fields import assign_default_write_columns, normalize_column
-from .runner import request_stop, run_project, running_status
+from .runner import request_pause, request_resume, request_stop, run_project, running_status
 from .scheduler import SchedulerThread, next_run
 from .services.browser_profiles import account_debug_port, chrome_executable
 from .services.component_installer import installation_status, start_installation
@@ -337,9 +337,25 @@ def create_app():
     @app.route("/runs/<int:run_id>/stop", methods=["POST"])
     def run_stop(run_id):
         run = db.get_run(run_id)
-        if run and run.get("status") in {"running", "stopping"}:
+        if run and run.get("status") in {"running", "paused", "stopping"}:
             request_stop(run_id)
             flash("已请求停止，当前贴文处理完成后会停止。", "warning")
+        return redirect(url_for("run_detail", run_id=run_id))
+
+    @app.route("/runs/<int:run_id>/pause", methods=["POST"])
+    def run_pause(run_id):
+        run = db.get_run(run_id)
+        if run and run.get("status") == "running":
+            request_pause(run_id)
+            flash("已暂停领取新行；正在处理的贴文会先完成。", "info")
+        return redirect(url_for("run_detail", run_id=run_id))
+
+    @app.route("/runs/<int:run_id>/resume", methods=["POST"])
+    def run_resume(run_id):
+        run = db.get_run(run_id)
+        if run and run.get("status") == "paused":
+            request_resume(run_id)
+            flash("任务已继续运行。", "success")
         return redirect(url_for("run_detail", run_id=run_id))
 
     @app.route("/environment")
@@ -406,6 +422,7 @@ def create_app():
         def status_label(status):
             return {
                 "running": "运行中",
+                "paused": "已暂停",
                 "stopping": "正在停止",
                 "stopped": "已停止",
                 "success": "成功",
@@ -417,6 +434,7 @@ def create_app():
         def status_badge_class(status):
             return {
                 "running": "text-bg-primary",
+                "paused": "text-bg-info",
                 "stopping": "text-bg-warning",
                 "stopped": "text-bg-secondary",
                 "success": "text-bg-success",
@@ -546,10 +564,10 @@ def live_runs_payload():
     live_ids = {
         int(run_id)
         for run_id, state in live_states.items()
-        if (state or {}).get("status") in {"running", "stopping"}
+        if (state or {}).get("status") in {"running", "paused", "stopping"}
     }
     for run in runs:
-        if int(run["id"]) in live_ids or (run["status"] in {"running", "stopping"} and int(run["id"]) in live_states):
+        if int(run["id"]) in live_ids or (run["status"] in {"running", "paused", "stopping"} and int(run["id"]) in live_states):
             extra = live_run_detail(run["id"])
             extra["project_name"] = extra.get("project_name") or run["project_name"]
             active = extra
@@ -561,7 +579,7 @@ def live_runs_payload():
             break
     if not active:
         for run_id, state in live_states.items():
-            if (state or {}).get("status") in {"running", "stopping"}:
+            if (state or {}).get("status") in {"running", "paused", "stopping"}:
                 active = live_run_detail(int(run_id))
                 break
     if not active and runs:
@@ -686,6 +704,12 @@ def normalize_project_form(data, account_ids=None):
     data["browser_profile_path"] = ""
     data["ocr_languages"] = normalize_ocr_language(data.get("ocr_languages"))
     data["audio_min_like_count"] = normalize_non_negative_int(data.get("audio_min_like_count"))
+    data["header_row"] = max(1, normalize_non_negative_int(data.get("header_row")) or 1)
+    data["start_row"] = max(1, normalize_non_negative_int(data.get("start_row")) or 2)
+    data["end_row"] = normalize_non_negative_int(data.get("end_row"))
+    if data["end_row"] and data["end_row"] < data["start_row"]:
+        data["end_row"] = data["start_row"]
+    data["max_workers"] = min(3, max(1, normalize_non_negative_int(data.get("max_workers")) or 1))
     data["write_start_column"] = normalize_column(data.get("write_start_column"), "B")
     data["processed_log_column"] = normalize_column(data.get("processed_log_column"), "")
     data["skip_existing_write_data"] = 1 if data.get("skip_existing_write_data") == "on" else 0
@@ -693,6 +717,8 @@ def normalize_project_form(data, account_ids=None):
         data["worksheet_name"] = data.get("page_source_worksheet_name") or data.get("worksheet_name") or ""
         data["link_column"] = "A"
         data["start_row"] = 2
+        data["end_row"] = 0
+        data["max_workers"] = 1
         data["rerun_policy"] = data.get("rerun_policy") or "overwrite"
     return data
 
