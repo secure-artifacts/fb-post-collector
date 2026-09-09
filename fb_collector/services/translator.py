@@ -1,10 +1,25 @@
 import time
+import threading
+from collections import OrderedDict
 
 import requests
 
 
 GOOGLE_TRANSLATE_URL = "https://translate.googleapis.com/translate_a/single"
+GOOGLE_TRANSLATE_URLS = (
+    GOOGLE_TRANSLATE_URL,
+    "https://translate.google.com/translate_a/single",
+)
+MYMEMORY_TRANSLATE_URL = "https://api.mymemory.translated.net/get"
 MAX_TRANSLATE_CHUNK = 1800
+MYMEMORY_MAX_BYTES = 450
+MIN_REQUEST_INTERVAL = 0.8
+MAX_CACHE_ITEMS = 1000
+GOOGLE_COOLDOWN_SECONDS = 600
+_translate_lock = threading.Lock()
+_translation_cache = OrderedDict()
+_last_request_at = 0.0
+_google_cooldown_until = 0.0
 
 
 class TranslateError(Exception):
@@ -61,30 +76,100 @@ def split_text(text):
 
 
 def translate_chunk(text):
-    last_error = None
-    for attempt in range(3):
+    global _last_request_at, _google_cooldown_until
+    cache_key = str(text or "")
+    with _translate_lock:
+        cached = _translation_cache.get(cache_key)
+        if cached is not None:
+            _translation_cache.move_to_end(cache_key)
+            return cached
+
+        errors = []
+        if time.monotonic() >= _google_cooldown_until:
+            for attempt, endpoint in enumerate(GOOGLE_TRANSLATE_URLS):
+                if attempt:
+                    time.sleep(1)
+                elapsed = time.monotonic() - _last_request_at
+                if elapsed < MIN_REQUEST_INTERVAL:
+                    time.sleep(MIN_REQUEST_INTERVAL - elapsed)
+                try:
+                    response = requests.get(
+                        endpoint,
+                        params={
+                            "client": "gtx",
+                            "sl": "auto",
+                            "tl": "zh-CN",
+                            "dt": "t",
+                            "q": text,
+                        },
+                        timeout=30,
+                        headers={
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+                            "Accept": "application/json,text/plain,*/*",
+                        },
+                    )
+                    _last_request_at = time.monotonic()
+                    response.raise_for_status()
+                    data = response.json()
+                    parts = data[0] if data and isinstance(data[0], list) else []
+                    translated = "".join(part[0] for part in parts if part and part[0]).strip()
+                    if translated:
+                        return remember_translation(cache_key, translated)
+                    errors.append("Google: empty translation result")
+                except Exception as exc:
+                    _last_request_at = time.monotonic()
+                    errors.append(f"Google: {exc!r}")
+                    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                    if status_code == 429:
+                        _google_cooldown_until = time.monotonic() + GOOGLE_COOLDOWN_SECONDS
+                    elif status_code is not None and status_code not in {408, 425} and status_code < 500:
+                        break
+
         try:
-            response = requests.get(
-                GOOGLE_TRANSLATE_URL,
-                params={
-                    "client": "gtx",
-                    "sl": "auto",
-                    "tl": "zh-CN",
-                    "dt": "t",
-                    "q": text,
-                },
-                timeout=30,
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-            response.raise_for_status()
-            data = response.json()
-            parts = data[0] if data and isinstance(data[0], list) else []
-            translated = "".join(part[0] for part in parts if part and part[0]).strip()
-            if translated:
-                return translated
-            last_error = TranslateError("empty translation result")
+            parts = []
+            for piece in split_utf8_bytes(text, MYMEMORY_MAX_BYTES):
+                elapsed = time.monotonic() - _last_request_at
+                if elapsed < MIN_REQUEST_INTERVAL:
+                    time.sleep(MIN_REQUEST_INTERVAL - elapsed)
+                response = requests.get(
+                    MYMEMORY_TRANSLATE_URL,
+                    params={"q": piece, "langpair": "autodetect|zh-CN", "mt": "1"},
+                    timeout=30,
+                    headers={"User-Agent": "FBPostCollector/1.4.3"},
+                )
+                _last_request_at = time.monotonic()
+                response.raise_for_status()
+                data = response.json()
+                translated = str((data.get("responseData") or {}).get("translatedText") or "").strip()
+                if not translated or int(data.get("responseStatus") or 200) >= 400:
+                    raise TranslateError(str(data.get("responseDetails") or "empty MyMemory translation result"))
+                parts.append(translated)
+            return remember_translation(cache_key, "\n".join(parts).strip())
         except Exception as exc:
-            last_error = exc
-        if attempt < 2:
-            time.sleep(0.5 * (attempt + 1))
-    raise TranslateError(repr(last_error))
+            errors.append(f"MyMemory: {exc!r}")
+            raise TranslateError(" | ".join(errors)) from exc
+
+
+def remember_translation(key, translated):
+    _translation_cache[key] = translated
+    _translation_cache.move_to_end(key)
+    while len(_translation_cache) > MAX_CACHE_ITEMS:
+        _translation_cache.popitem(last=False)
+    return translated
+
+
+def split_utf8_bytes(text, limit):
+    pieces = []
+    current = []
+    current_bytes = 0
+    for char in str(text or ""):
+        size = len(char.encode("utf-8"))
+        if current and current_bytes + size > limit:
+            pieces.append("".join(current))
+            current = []
+            current_bytes = 0
+        current.append(char)
+        current_bytes += size
+    if current:
+        pieces.append("".join(current))
+    return pieces or [""]

@@ -818,8 +818,8 @@ class FacebookScraper:
 
             self.process_audio_media(values, project, temp_files)
 
-            translate_field(values, "post_text", "post_text_zh", "post_translate_error")
             translate_field(values, "audio_text", "audio_text_zh", "audio_translate_error")
+            translate_field(values, "post_text", "post_text_zh", "post_translate_error")
             values["scraped_at"] = now_text()
             raw["yt_dlp_error"] = values.get("yt_dlp_error", "")
             raw["yt_dlp_path"] = values.get("yt_dlp_path", "")
@@ -867,8 +867,8 @@ class FacebookScraper:
                 self.process_image_media(media_url, project, values, temp_files)
 
             self.process_audio_media(values, project, temp_files)
-            translate_field(values, "post_text", "post_text_zh", "post_translate_error")
             translate_field(values, "audio_text", "audio_text_zh", "audio_translate_error")
+            translate_field(values, "post_text", "post_text_zh", "post_translate_error")
             values["scraped_at"] = now_text()
             raw["yt_dlp_error"] = values.get("yt_dlp_error", "")
             raw["yt_dlp_path"] = values.get("yt_dlp_path", "")
@@ -1162,22 +1162,20 @@ class FacebookScraper:
                 frame = capture_video_frame(values["local_video_path"])
                 if frame:
                     temp_files.append(frame)
+                    self.apply_ocr_to_local_media(frame, project, values)
                     gyazo_url = upload_file(frame)
                     values["media_url"] = gyazo_url or values.get("media_url", "")
                     values["media_preview_formula"] = f'=IMAGE("{values["media_url"]}")' if values["media_url"] else ""
-                    values["ocr_text"] = ""
-                    values["ocr_text_zh"] = ""
                     return
             video = download_temp_file(video_url, ".mp4")
             temp_files.append(video)
             frame = capture_video_frame(video)
             if frame:
                 temp_files.append(frame)
+                self.apply_ocr_to_local_media(frame, project, values)
                 gyazo_url = upload_file(frame)
                 values["media_url"] = gyazo_url or values.get("media_url", "")
                 values["media_preview_formula"] = f'=IMAGE("{values["media_url"]}")' if values["media_url"] else ""
-                values["ocr_text"] = ""
-                values["ocr_text_zh"] = ""
                 return
         except Exception:
             pass
@@ -1192,11 +1190,10 @@ class FacebookScraper:
                 screenshot = video.screenshot_as_png
                 frame = write_temp_bytes(screenshot, ".png")
                 temp_files.append(frame)
+                self.apply_ocr_to_local_media(frame, project, values)
                 gyazo_url = upload_file(frame)
                 values["media_url"] = gyazo_url or values.get("media_url", "")
                 values["media_preview_formula"] = f'=IMAGE("{values["media_url"]}")' if values["media_url"] else ""
-                values["ocr_text"] = ""
-                values["ocr_text_zh"] = ""
                 return
         except Exception:
             pass
@@ -1211,24 +1208,29 @@ class FacebookScraper:
             gyazo_url = upload_file(temp)
             values["media_url"] = gyazo_url or media_url
             values["media_preview_formula"] = f'=IMAGE("{values["media_url"]}")' if values["media_url"] else ""
-            values["ocr_language"] = normalize_ocr_language(project.get("ocr_languages"))
-            values["ocr_status"] = ""
-            values["ocr_error"] = ""
-            try:
-                values["ocr_text"] = ocr_image(temp, values["ocr_language"])
-                values["ocr_status"] = "success" if values["ocr_text"] else "success_empty"
-            except Exception as exc:
-                values["ocr_text"] = ""
-                values["ocr_status"] = "failed"
-                values["ocr_error"] = repr(exc)
-            if not values["ocr_text"]:
-                values["ocr_text"] = clean_facebook_image_description(values.get("image_accessibility_text", ""))
-                if values["ocr_text"]:
-                    values["ocr_status"] = f"{values['ocr_status']}_fallback"
-            translate_field(values, "ocr_text", "ocr_text_zh", "ocr_translate_error")
-        except Exception:
+            self.apply_ocr_to_local_media(temp, project, values)
+        except Exception as exc:
             values["media_url"] = media_url
             values["media_preview_formula"] = f'=IMAGE("{media_url}")' if media_url else ""
+            values["ocr_status"] = values.get("ocr_status") or "media_download_failed"
+            values["ocr_error"] = values.get("ocr_error") or repr(exc)
+
+    def apply_ocr_to_local_media(self, image_path, project, values):
+        values["ocr_language"] = normalize_ocr_language(project.get("ocr_languages"))
+        values["ocr_status"] = ""
+        values["ocr_error"] = ""
+        try:
+            values["ocr_text"] = ocr_image(image_path, values["ocr_language"])
+            values["ocr_status"] = "success" if values["ocr_text"] else "success_empty"
+        except Exception as exc:
+            values["ocr_text"] = ""
+            values["ocr_status"] = "failed"
+            values["ocr_error"] = repr(exc)
+        if not values["ocr_text"]:
+            values["ocr_text"] = clean_facebook_image_description(values.get("image_accessibility_text", ""))
+            if values["ocr_text"]:
+                values["ocr_status"] = f"{values['ocr_status']}_fallback"
+        translate_field(values, "ocr_text", "ocr_text_zh", "ocr_translate_error")
 
     def process_audio_media(self, values, project, temp_files):
         if should_skip_audio_by_like_count(values, project):
