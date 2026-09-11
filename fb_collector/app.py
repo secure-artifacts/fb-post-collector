@@ -23,6 +23,12 @@ from .services.errors import LoginRequiredError, UserVisibleError
 from .services.rate_limit import FACEBOOK_GRAPHQL_DAILY_LIMIT, local_usage_date
 from .services.scraper import facebook_logged_in, login_check_driver
 from .services.sheets import clear_google_oauth, extract_spreadsheet_id, google_auth_status, run_google_oauth
+from .services.translator import (
+    DEFAULT_GEMINI_MODEL,
+    DEFAULT_GROQ_MODEL,
+    clear_translation_cache,
+    test_translation_service,
+)
 from .services.update_checker import check_for_update
 
 
@@ -412,12 +418,40 @@ def create_app():
     @app.route("/settings", methods=["GET", "POST"])
     def settings():
         if request.method == "POST":
-            db.setting_set("gyazo_access_token", request.form.get("gyazo_access_token", ""))
+            if "gyazo_access_token" in request.form:
+                db.setting_set("gyazo_access_token", request.form.get("gyazo_access_token", ""))
+                flash("Gyazo Token 已保存。", "success")
+            if "translation_provider" in request.form:
+                provider = request.form.get("translation_provider", "auto")
+                if provider not in {"auto", "groq", "gemini", "free"}:
+                    provider = "auto"
+                db.setting_set("translation_provider", provider)
+                db.setting_set("groq_model", request.form.get("groq_model", "").strip() or DEFAULT_GROQ_MODEL)
+                db.setting_set("gemini_model", request.form.get("gemini_model", "").strip() or DEFAULT_GEMINI_MODEL)
+                for key_name in ("groq_api_key", "gemini_api_key"):
+                    if request.form.get(f"clear_{key_name}") == "1":
+                        db.setting_set(key_name, "")
+                    elif request.form.get(key_name, "").strip():
+                        db.setting_set(key_name, request.form[key_name].strip())
+                clear_translation_cache()
+                if request.form.get("action") == "test_translation":
+                    result = test_translation_service()
+                    if result["ok"]:
+                        flash(f"{result['provider']} 翻译测试成功：{result['text']}", "success")
+                    else:
+                        flash(f"{result['provider']} 翻译测试失败：{result['error']}", "danger")
+                else:
+                    flash("AI 翻译设置已保存。", "success")
             return redirect(url_for("settings"))
         return render_template(
             "settings.html",
             gyazo_access_token=db.setting_get("gyazo_access_token"),
             google_auth=google_auth_status(),
+            translation_provider=db.setting_get("translation_provider", "auto"),
+            groq_key_configured=bool(db.setting_get("groq_api_key")),
+            gemini_key_configured=bool(db.setting_get("gemini_api_key")),
+            groq_model=db.setting_get("groq_model", DEFAULT_GROQ_MODEL),
+            gemini_model=db.setting_get("gemini_model", DEFAULT_GEMINI_MODEL),
         )
 
     @app.context_processor

@@ -4,6 +4,8 @@ from collections import OrderedDict
 
 import requests
 
+from ..db import setting_get
+
 
 GOOGLE_TRANSLATE_URL = "https://translate.googleapis.com/translate_a/single"
 GOOGLE_TRANSLATE_URLS = (
@@ -16,6 +18,10 @@ MYMEMORY_MAX_BYTES = 450
 MIN_REQUEST_INTERVAL = 0.8
 MAX_CACHE_ITEMS = 1000
 GOOGLE_COOLDOWN_SECONDS = 600
+GROQ_TRANSLATE_URL = "https://api.groq.com/openai/v1/chat/completions"
+GEMINI_TRANSLATE_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 _translate_lock = threading.Lock()
 _translation_cache = OrderedDict()
 _last_request_at = 0.0
@@ -49,6 +55,60 @@ def translate_to_chinese_detail(text, driver=None):
         return {"text": "", "error": repr(exc)}
 
 
+def translation_config():
+    try:
+        provider = setting_get("translation_provider", "auto") or "auto"
+        return {
+            "provider": provider if provider in {"auto", "groq", "gemini", "free"} else "auto",
+            "groq_api_key": setting_get("groq_api_key", "").strip(),
+            "groq_model": setting_get("groq_model", DEFAULT_GROQ_MODEL).strip() or DEFAULT_GROQ_MODEL,
+            "gemini_api_key": setting_get("gemini_api_key", "").strip(),
+            "gemini_model": setting_get("gemini_model", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL,
+        }
+    except Exception:
+        return {
+            "provider": "auto",
+            "groq_api_key": "",
+            "groq_model": DEFAULT_GROQ_MODEL,
+            "gemini_api_key": "",
+            "gemini_model": DEFAULT_GEMINI_MODEL,
+        }
+
+
+def clear_translation_cache():
+    with _translate_lock:
+        _translation_cache.clear()
+
+
+def test_translation_service():
+    config = translation_config()
+    provider = config["provider"]
+    if provider == "free":
+        return {"ok": False, "provider": "免费备用线路", "text": "", "error": "请选择 Groq、Google Gemini 或自动选择。"}
+    if provider == "auto":
+        if config["gemini_api_key"]:
+            provider = "gemini"
+        elif config["groq_api_key"]:
+            provider = "groq"
+        else:
+            return {"ok": False, "provider": "自动选择", "text": "", "error": "尚未配置 Gemini 或 Groq API Key。"}
+    try:
+        sample = "Bonjour, ceci est un test de traduction OCR et audio."
+        if provider == "gemini":
+            if not config["gemini_api_key"]:
+                raise TranslateError("Gemini API Key 未配置")
+            text = translate_with_gemini(sample, config["gemini_api_key"], config["gemini_model"])
+            label = "Google Gemini"
+        else:
+            if not config["groq_api_key"]:
+                raise TranslateError("Groq API Key 未配置")
+            text = translate_with_groq(sample, config["groq_api_key"], config["groq_model"])
+            label = "Groq"
+        return {"ok": True, "provider": label, "text": text, "error": ""}
+    except Exception as exc:
+        return {"ok": False, "provider": provider, "text": "", "error": safe_api_error(exc)}
+
+
 def split_text(text):
     text = str(text or "").strip()
     if len(text) <= MAX_TRANSLATE_CHUNK:
@@ -75,9 +135,16 @@ def split_text(text):
     return chunks or [text[:MAX_TRANSLATE_CHUNK]]
 
 
-def translate_chunk(text):
+def translate_chunk(text, config=None):
     global _last_request_at, _google_cooldown_until
-    cache_key = str(text or "")
+    config = dict(config or translation_config())
+    provider = config.get("provider") or "auto"
+    cache_key = (
+        provider,
+        config.get("groq_model") or "",
+        config.get("gemini_model") or "",
+        str(text or ""),
+    )
     with _translate_lock:
         cached = _translation_cache.get(cache_key)
         if cached is not None:
@@ -85,6 +152,40 @@ def translate_chunk(text):
             return cached
 
         errors = []
+        ai_providers = []
+        if provider == "auto":
+            ai_providers = ["gemini", "groq"]
+        elif provider in {"gemini", "groq"}:
+            ai_providers = [provider]
+        for ai_provider in ai_providers:
+            api_key = str(config.get(f"{ai_provider}_api_key") or "").strip()
+            if not api_key:
+                errors.append(f"{ai_provider}: API Key 未配置")
+                continue
+            try:
+                elapsed = time.monotonic() - _last_request_at
+                if elapsed < MIN_REQUEST_INTERVAL:
+                    time.sleep(MIN_REQUEST_INTERVAL - elapsed)
+                if ai_provider == "gemini":
+                    translated = translate_with_gemini(
+                        text,
+                        api_key,
+                        config.get("gemini_model") or DEFAULT_GEMINI_MODEL,
+                    )
+                else:
+                    translated = translate_with_groq(
+                        text,
+                        api_key,
+                        config.get("groq_model") or DEFAULT_GROQ_MODEL,
+                    )
+                _last_request_at = time.monotonic()
+                if translated:
+                    return remember_translation(cache_key, translated)
+                errors.append(f"{ai_provider}: empty translation result")
+            except Exception as exc:
+                _last_request_at = time.monotonic()
+                errors.append(f"{ai_provider}: {safe_api_error(exc)}")
+
         if time.monotonic() >= _google_cooldown_until:
             for attempt, endpoint in enumerate(GOOGLE_TRANSLATE_URLS):
                 if attempt:
@@ -135,7 +236,7 @@ def translate_chunk(text):
                     MYMEMORY_TRANSLATE_URL,
                     params={"q": piece, "langpair": "autodetect|zh-CN", "mt": "1"},
                     timeout=30,
-                    headers={"User-Agent": "FBPostCollector/1.4.3"},
+                    headers={"User-Agent": "FBPostCollector/1.4.5"},
                 )
                 _last_request_at = time.monotonic()
                 response.raise_for_status()
@@ -148,6 +249,78 @@ def translate_chunk(text):
         except Exception as exc:
             errors.append(f"MyMemory: {exc!r}")
             raise TranslateError(" | ".join(errors)) from exc
+
+
+def translate_with_groq(text, api_key, model=DEFAULT_GROQ_MODEL):
+    response = requests.post(
+        GROQ_TRANSLATE_URL,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={
+            "model": validate_model_name(model, DEFAULT_GROQ_MODEL, allow_slash=True),
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a translation engine. Translate the user text into Simplified Chinese. Preserve names, numbers, line breaks, and meaning. Return only the translation.",
+                },
+                {"role": "user", "content": str(text or "")},
+            ],
+            "temperature": 0,
+            "max_completion_tokens": 4096,
+        },
+        timeout=60,
+    )
+    response.raise_for_status()
+    data = response.json()
+    translated = str((((data.get("choices") or [{}])[0].get("message") or {}).get("content")) or "").strip()
+    if not translated:
+        raise TranslateError("Groq returned empty content")
+    return translated
+
+
+def translate_with_gemini(text, api_key, model=DEFAULT_GEMINI_MODEL):
+    model = validate_model_name(model, DEFAULT_GEMINI_MODEL)
+    response = requests.post(
+        GEMINI_TRANSLATE_URL.format(model=model),
+        headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+        json={
+            "system_instruction": {
+                "parts": [
+                    {
+                        "text": "Translate the supplied text into Simplified Chinese. Preserve names, numbers, line breaks, and meaning. Return only the translation."
+                    }
+                ]
+            },
+            "contents": [{"role": "user", "parts": [{"text": str(text or "")}]}],
+            "generationConfig": {"temperature": 0, "maxOutputTokens": 4096},
+        },
+        timeout=60,
+    )
+    response.raise_for_status()
+    data = response.json()
+    candidates = data.get("candidates") or []
+    parts = (((candidates[0] if candidates else {}).get("content") or {}).get("parts") or [])
+    translated = "".join(str(part.get("text") or "") for part in parts if isinstance(part, dict)).strip()
+    if not translated:
+        raise TranslateError("Gemini returned empty content")
+    return translated
+
+
+def validate_model_name(model, default, allow_slash=False):
+    allowed = r"[A-Za-z0-9._/-]{1,100}" if allow_slash else r"[A-Za-z0-9._-]{1,100}"
+    import re
+
+    value = str(model or "").strip()
+    return value if re.fullmatch(allowed, value) else default
+
+
+def safe_api_error(exc):
+    if isinstance(exc, TranslateError):
+        return str(exc)[:300]
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if status:
+        return f"HTTP {status}"
+    return type(exc).__name__
 
 
 def remember_translation(key, translated):

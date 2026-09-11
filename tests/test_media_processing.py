@@ -89,6 +89,40 @@ class TranslationTests(unittest.TestCase):
         self.assertGreater(len(pieces), 1)
         self.assertTrue(all(len(piece.encode("utf-8")) <= 450 for piece in pieces))
 
+    def test_groq_translation_uses_configured_key(self):
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"choices": [{"message": {"content": "图片中的文字"}}]}
+        config = {
+            "provider": "groq",
+            "groq_api_key": "groq-secret",
+            "groq_model": "openai/gpt-oss-20b",
+            "gemini_api_key": "",
+            "gemini_model": translator.DEFAULT_GEMINI_MODEL,
+        }
+        with patch.object(translator.requests, "post", return_value=response) as post:
+            self.assertEqual(translator.translate_chunk("text in image", config), "图片中的文字")
+        self.assertEqual(post.call_args.args[0], translator.GROQ_TRANSLATE_URL)
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer groq-secret")
+
+    def test_gemini_translation_uses_header_key(self):
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": "音频中的文字"}]}}]
+        }
+        config = {
+            "provider": "gemini",
+            "groq_api_key": "",
+            "groq_model": translator.DEFAULT_GROQ_MODEL,
+            "gemini_api_key": "gemini-secret",
+            "gemini_model": "gemini-3.8-flash",
+        }
+        with patch.object(translator.requests, "post", return_value=response) as post:
+            self.assertEqual(translator.translate_chunk("audio text", config), "音频中的文字")
+        self.assertIn("gemini-3.8-flash:generateContent", post.call_args.args[0])
+        self.assertEqual(post.call_args.kwargs["headers"]["x-goog-api-key"], "gemini-secret")
+
 
 class GroupPostTargetingTests(unittest.TestCase):
     URL = "https://fb.com/groups/107571649019326/posts/1038161605960321"
