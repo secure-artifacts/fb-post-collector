@@ -44,6 +44,7 @@ from .facebook_graphql import (
     TAHOE_ROOT_DOC_ID,
     TAHOE_ROOT_FRIENDLY_NAME,
     extract_edit_history_fields,
+    infer_post_id_from_url,
     extract_reel_fields,
     extract_single_post_fields,
     extract_story_id,
@@ -774,11 +775,12 @@ class FacebookScraper:
             description = meta_content(soup, "og:description") or meta_content(soup, "description")
             title = meta_content(soup, "og:title")
             image_url = meta_content(soup, "og:image")
+            expected_post_id = infer_post_id_from_url(final_url)
             fallback = {
                 "author_name": title.split("|")[0].strip() if title else "",
                 "media_url": image_url,
                 "post_text": description,
-                "post_id": extract_post_id(final_url, html),
+                "post_id": expected_post_id or extract_post_id(final_url, html),
                 "post_type": classify_post(final_url, html, image_url),
             }
 
@@ -786,7 +788,9 @@ class FacebookScraper:
             graphql_values, graphql_errors = self.fetch_graphql_values(driver, final_url, html, project)
             values = merge_non_empty(values, graphql_values)
             values["page_id"] = values.get("page_id") or extract_page_id(final_url, values.get("author_id"))
-            self.enrich_from_open_page(driver, values, title, description)
+            self.enrich_from_open_page(driver, values, title, description, expected_post_id)
+            if expected_post_id:
+                values["post_id"] = expected_post_id
             raw.update(
                 {
                     "input_url": url,
@@ -933,7 +937,7 @@ class FacebookScraper:
                     single_post_variables(story_id),
                 )
                 payloads = parse_json_payloads(response)
-                values = merge_non_empty(values, extract_single_post_fields(payloads))
+                values = merge_non_empty(values, extract_single_post_fields(payloads, infer_post_id_from_url(url)))
             except RateLimitError:
                 raise
             except Exception as exc:
@@ -979,20 +983,33 @@ class FacebookScraper:
         edges, page_info = timeline_edges_and_page_info(payloads)
         return [extract_story_fields(edge.get("node") or {}) for edge in edges], page_info
 
-    def enrich_from_open_page(self, driver, values, title, description):
+    def enrich_from_open_page(self, driver, values, title, description, expected_post_id=""):
         try:
             data = driver.execute_script(
                 """
+                const expectedPostId = arguments[0] || '';
+                const articles = Array.from(document.querySelectorAll('[role="article"], article'));
+                const targetPatterns = expectedPostId ? [
+                  `/posts/${expectedPostId}`,
+                  `/permalink/${expectedPostId}`,
+                  `/videos/${expectedPostId}`,
+                  `/reel/${expectedPostId}`,
+                  `story_fbid=${expectedPostId}`,
+                  `fbid=${expectedPostId}`
+                ] : [];
+                const root = articles.find(article => Array.from(article.querySelectorAll('a[href]')).some(
+                  link => targetPatterns.some(pattern => (link.href || '').includes(pattern))
+                )) || articles[0] || document;
                 const pickText = (selectors) => {
                   for (const selector of selectors) {
-                    const node = document.querySelector(selector);
+                    const node = root.querySelector(selector);
                     const text = node && (node.innerText || node.textContent || '').trim();
                     if (text) return text;
                   }
                   return '';
                 };
-                const timeNode = document.querySelector('time[datetime], abbr[data-utime], [data-utime]');
-                const video = document.querySelector('video');
+                const timeNode = root.querySelector('time[datetime], abbr[data-utime], [data-utime]');
+                const video = root.querySelector('video');
                 return {
                   text: pickText([
                     '[data-ad-preview="message"]',
@@ -1005,7 +1022,8 @@ class FacebookScraper:
                   metaImage: document.querySelector('meta[property="og:image"]')?.content || '',
                   metaDescription: document.querySelector('meta[property="og:description"]')?.content || ''
                 };
-                """
+                """,
+                expected_post_id,
             )
         except Exception:
             data = {}

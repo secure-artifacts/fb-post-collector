@@ -95,22 +95,24 @@ def timestamp_to_text(value):
 
 
 def extract_video_id(url: str, html: str = "") -> str:
-    source = f"{url}\n{html}"
+    # 贴文页 HTML 会同时包含推荐视频。只要 URL 本身不是视频链接，就不能
+    # 把页面里遇到的第一个 videoID 当成当前贴文，否则群组贴文会串数据。
     patterns = [
         r"/reel/(\d+)",
         r"/videos/(\d+)",
         r"[?&]v=(\d+)",
-        r'"videoID"\s*:\s*"(\d+)"',
-        r'"video_id"\s*:\s*"(\d+)"',
     ]
     for pattern in patterns:
-        match = re.search(pattern, source)
+        match = re.search(pattern, url)
         if match:
             return match.group(1)
     return ""
 
 
 def extract_story_id(url: str, html: str = "") -> str:
+    inferred = infer_story_id_from_url(url)
+    if inferred:
+        return inferred
     source = unescape(f"{url}\n{html}")
     patterns = [
         r'"storyID"\s*:\s*"([^"]+)"',
@@ -122,7 +124,24 @@ def extract_story_id(url: str, html: str = "") -> str:
         match = re.search(pattern, source)
         if match:
             return match.group(1).replace("\\/", "/")
-    return infer_story_id_from_url(url)
+    return ""
+
+
+def infer_post_id_from_url(url: str) -> str:
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    query_id = first_query_value(params, "story_fbid") or first_query_value(params, "fbid") or first_query_value(params, "v")
+    if query_id:
+        return query_id
+    for pattern in (
+        r"/groups/\d+/(?:posts|permalink)/(\d+)",
+        r"/\d+_(\d+)",
+        r"/(?:posts|permalink|videos|reel)/(\d+)",
+    ):
+        match = re.search(pattern, parsed.path)
+        if match:
+            return match.group(1)
+    return ""
 
 
 def infer_story_id_from_url(url: str) -> str:
@@ -441,13 +460,29 @@ def video_thumbnail_url(video: dict[str, Any]) -> str:
     )
 
 
-def extract_single_post_fields(payloads: list[dict[str, Any]]) -> dict[str, Any]:
-    node = {}
+def extract_single_post_fields(payloads: list[dict[str, Any]], expected_post_id: str = "") -> dict[str, Any]:
+    candidates = []
     for payload in payloads:
-        candidate = nested(payload, "data.node_v2", {})
-        if isinstance(candidate, dict) and candidate.get("__typename") == "Story":
-            node = candidate
-            break
+        for path in ("data.node_v2", "data.node", "data.story"):
+            candidate = nested(payload, path, {})
+            if isinstance(candidate, dict) and candidate.get("__typename") == "Story":
+                candidates.append(candidate)
+        candidates.extend(item for item in walk_dicts(payload) if item.get("__typename") == "Story")
+    if expected_post_id:
+        matching = [
+            item
+            for item in candidates
+            if expected_post_id in {
+                str(item.get("post_id") or ""),
+                str(item.get("id") or ""),
+                str(item.get("legacy_story_hideable_id") or ""),
+            }
+            or expected_post_id in str(item.get("url") or item.get("permalink_url") or "")
+            or expected_post_id in str(item.get("tracking") or "")
+        ]
+        node = matching[0] if matching else (candidates[0] if candidates else {})
+    else:
+        node = candidates[0] if candidates else {}
     if not node:
         return {}
 
@@ -535,7 +570,7 @@ def extract_single_post_fields(payloads: list[dict[str, Any]]) -> dict[str, Any]
         ],
     )
 
-    return {
+    result = {
         "author_id": actor.get("id", "") if isinstance(actor, dict) else "",
         "author_name": actor.get("name", "") if isinstance(actor, dict) else "",
         "author_avatar": nested(actor, "profile_picture.uri") if isinstance(actor, dict) else "",
@@ -556,6 +591,13 @@ def extract_single_post_fields(payloads: list[dict[str, Any]]) -> dict[str, Any]
         "captions_url": nested(video_media, "video_available_captions_locales.0.captions_url") if isinstance(video_media, dict) else "",
         "graphql_source": "single_post",
     }
+    # 群组贴文返回结构比普通专页贴文变化更频繁，用时间线解析器补齐
+    # 作者、互动数、媒体和嵌套 message 等字段。
+    result = merge_non_empty(extract_story_fields(node), result)
+    result["graphql_source"] = "single_post"
+    if expected_post_id:
+        result["post_id"] = expected_post_id
+    return result
 
 
 def timeline_edges_and_page_info(payloads: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:

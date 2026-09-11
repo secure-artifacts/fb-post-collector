@@ -7,6 +7,12 @@ import requests
 from PIL import Image
 
 from fb_collector.services import ocr, translator
+from fb_collector.services.facebook_graphql import (
+    extract_single_post_fields,
+    extract_story_id,
+    extract_video_id,
+    infer_post_id_from_url,
+)
 from fb_collector.services.scraper import FacebookScraper
 
 
@@ -82,6 +88,45 @@ class TranslationTests(unittest.TestCase):
         pieces = translator.split_utf8_bytes("斯瓦西里语和法语" * 100, 450)
         self.assertGreater(len(pieces), 1)
         self.assertTrue(all(len(piece.encode("utf-8")) <= 450 for piece in pieces))
+
+
+class GroupPostTargetingTests(unittest.TestCase):
+    URL = "https://fb.com/groups/107571649019326/posts/1038161605960321"
+
+    def test_group_url_wins_over_unrelated_ids_in_page_html(self):
+        html = '<script>{"storyID":"wrong-story","videoID":"1801762634289117"}</script>'
+        self.assertEqual(infer_post_id_from_url(self.URL), "1038161605960321")
+        self.assertEqual(
+            extract_story_id(self.URL, html),
+            "UzpfSTEwNzU3MTY0OTAxOTMyNjpWSzoxMDM4MTYxNjA1OTYwMzIx",
+        )
+        self.assertEqual(extract_video_id(self.URL, html), "")
+
+    def test_group_single_post_accepts_data_node_shape_and_keeps_url_id(self):
+        payloads = [
+            {
+                "data": {
+                    "node": {
+                        "__typename": "Story",
+                        "id": "opaque-story-node",
+                        "post_id": "1038161605960321",
+                        "comet_sections": {
+                            "content": {
+                                "story": {
+                                    "actors": [{"id": "55", "name": "作者"}],
+                                    "message": {"text": "群组贴文正文"},
+                                }
+                            }
+                        },
+                    }
+                }
+            }
+        ]
+        values = extract_single_post_fields(payloads, "1038161605960321")
+        self.assertEqual(values["post_id"], "1038161605960321")
+        self.assertEqual(values["author_name"], "作者")
+        self.assertEqual(values["post_text"], "群组贴文正文")
+        self.assertEqual(values["graphql_source"], "single_post")
 
 
 if __name__ == "__main__":
