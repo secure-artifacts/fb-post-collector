@@ -28,6 +28,7 @@ from .services.translator import (
     DEFAULT_GROQ_MODEL,
     DEFAULT_GROQ_VISION_MODEL,
     clear_translation_cache,
+    parse_api_keys,
     test_translation_service,
 )
 from .services.update_checker import check_for_update
@@ -431,11 +432,19 @@ def create_app():
                 db.setting_set("groq_vision_model", request.form.get("groq_vision_model", "").strip() or DEFAULT_GROQ_VISION_MODEL)
                 db.setting_set("gemini_model", request.form.get("gemini_model", "").strip() or DEFAULT_GEMINI_MODEL)
                 db.setting_set("ai_ocr_enabled", "1" if request.form.get("ai_ocr_enabled") == "1" else "0")
-                for key_name in ("groq_api_key", "gemini_api_key"):
-                    if request.form.get(f"clear_{key_name}") == "1":
-                        db.setting_set(key_name, "")
-                    elif request.form.get(key_name, "").strip():
-                        db.setting_set(key_name, request.form[key_name].strip())
+                for key_provider in ("groq", "gemini"):
+                    plural_name = f"{key_provider}_api_keys"
+                    legacy_name = f"{key_provider}_api_key"
+                    if request.form.get(f"clear_{plural_name}") == "1":
+                        db.setting_set(plural_name, "")
+                        db.setting_set(legacy_name, "")
+                        continue
+                    existing = parse_api_keys(db.setting_get(plural_name, "") or db.setting_get(legacy_name, ""))
+                    additions = parse_api_keys(request.form.get(f"{plural_name}_add", ""))
+                    if additions:
+                        combined = parse_api_keys(existing + additions)
+                        db.setting_set(plural_name, "\n".join(combined))
+                        db.setting_set(legacy_name, "")
                 clear_translation_cache()
                 if request.form.get("action") == "test_translation":
                     result = test_translation_service()
@@ -446,13 +455,17 @@ def create_app():
                 else:
                     flash("AI 翻译设置已保存。", "success")
             return redirect(url_for("settings"))
+        groq_keys = parse_api_keys(db.setting_get("groq_api_keys", "") or db.setting_get("groq_api_key", ""))
+        gemini_keys = parse_api_keys(db.setting_get("gemini_api_keys", "") or db.setting_get("gemini_api_key", ""))
         return render_template(
             "settings.html",
             gyazo_access_token=db.setting_get("gyazo_access_token"),
             google_auth=google_auth_status(),
             translation_provider=db.setting_get("translation_provider", "auto"),
-            groq_key_configured=bool(db.setting_get("groq_api_key")),
-            gemini_key_configured=bool(db.setting_get("gemini_api_key")),
+            groq_key_configured=bool(groq_keys),
+            gemini_key_configured=bool(gemini_keys),
+            groq_key_count=len(groq_keys),
+            gemini_key_count=len(gemini_keys),
             groq_model=db.setting_get("groq_model", DEFAULT_GROQ_MODEL),
             groq_vision_model=db.setting_get("groq_vision_model", DEFAULT_GROQ_VISION_MODEL),
             gemini_model=db.setting_get("gemini_model", DEFAULT_GEMINI_MODEL),

@@ -30,7 +30,8 @@
     <h2 class="h5 mb-2">AI 翻译</h2>
     <p class="text-secondary small">
       用于贴文、OCR 文本和音频文本翻译。密钥只保存在本机，不会显示在页面或写入运行日志。
-      “自动选择”会优先使用已配置的 Gemini，其次 Groq，失败后再使用免费备用线路。
+      每个服务可添加多个密钥，软件会按请求轮询；当前密钥限额不足或调用失败时会自动尝试下一个。
+      “自动选择”会优先使用已配置的 Gemini，其次 Groq，全部失败后再使用免费备用线路。
     </p>
     <form method="post" class="row g-3" autocomplete="off">
       <label class="col-md-4 form-label">翻译服务
@@ -49,23 +50,23 @@
         </label>
       </div>
 
-      <label class="col-md-4 form-label">Google Gemini API Key
-        <input class="form-control form-control-sm mt-1" type="password" name="gemini_api_key"
-               placeholder="{{ '已配置；留空保持不变' if gemini_key_configured else '粘贴 Gemini API Key' }}">
-        <span class="form-text">状态：{{ '已配置' if gemini_key_configured else '未配置' }}</span>
+      <label class="col-md-4 form-label">添加 Google Gemini API Key
+        <textarea class="form-control form-control-sm mt-1" name="gemini_api_keys_add" rows="3"
+                  placeholder="每行一个 Key；保存后加入现有密钥池"></textarea>
+        <span class="form-text">当前已配置 {{ gemini_key_count }} 个；留空不会改动现有密钥。</span>
         <a class="form-text ms-2" href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">获取密钥</a>
       </label>
       <label class="col-md-4 form-label">Gemini 模型
         <input class="form-control form-control-sm mt-1" name="gemini_model" value="{{ gemini_model }}">
       </label>
       <label class="col-md-4 form-label pt-md-4">
-        <input class="form-check-input" type="checkbox" name="clear_gemini_api_key" value="1"> 清除 Gemini 密钥
+        <input class="form-check-input" type="checkbox" name="clear_gemini_api_keys" value="1"> 清除全部 Gemini 密钥
       </label>
 
-      <label class="col-md-4 form-label">Groq API Key
-        <input class="form-control form-control-sm mt-1" type="password" name="groq_api_key"
-               placeholder="{{ '已配置；留空保持不变' if groq_key_configured else '粘贴 Groq API Key' }}">
-        <span class="form-text">状态：{{ '已配置' if groq_key_configured else '未配置' }}</span>
+      <label class="col-md-4 form-label">添加 Groq API Key
+        <textarea class="form-control form-control-sm mt-1" name="groq_api_keys_add" rows="3"
+                  placeholder="每行一个 Key；保存后加入现有密钥池"></textarea>
+        <span class="form-text">当前已配置 {{ groq_key_count }} 个；留空不会改动现有密钥。</span>
         <a class="form-text ms-2" href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer">获取密钥</a>
       </label>
       <label class="col-md-4 form-label">Groq 模型
@@ -75,7 +76,7 @@
         <input class="form-control form-control-sm mt-1" name="groq_vision_model" value="{{ groq_vision_model }}">
       </label>
       <label class="col-md-4 form-label">
-        <input class="form-check-input" type="checkbox" name="clear_groq_api_key" value="1"> 清除 Groq 密钥
+        <input class="form-check-input" type="checkbox" name="clear_groq_api_keys" value="1"> 清除全部 Groq 密钥
       </label>
 
       <div class="col-12 d-flex gap-2">

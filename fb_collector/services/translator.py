@@ -27,6 +27,8 @@ DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 DEFAULT_GROQ_VISION_MODEL = "qwen/qwen3.6-27b"
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 _translate_lock = threading.Lock()
+_key_rotation_lock = threading.Lock()
+_key_rotation = {"groq": 0, "gemini": 0}
 _translation_cache = OrderedDict()
 _last_request_at = 0.0
 _google_cooldown_until = 0.0
@@ -62,12 +64,16 @@ def translate_to_chinese_detail(text, driver=None):
 def translation_config():
     try:
         provider = setting_get("translation_provider", "auto") or "auto"
+        groq_keys = parse_api_keys(setting_get("groq_api_keys", "") or setting_get("groq_api_key", ""))
+        gemini_keys = parse_api_keys(setting_get("gemini_api_keys", "") or setting_get("gemini_api_key", ""))
         return {
             "provider": provider if provider in {"auto", "groq", "gemini", "free"} else "auto",
-            "groq_api_key": setting_get("groq_api_key", "").strip(),
+            "groq_api_keys": groq_keys,
+            "groq_api_key": groq_keys[0] if groq_keys else "",
             "groq_model": setting_get("groq_model", DEFAULT_GROQ_MODEL).strip() or DEFAULT_GROQ_MODEL,
             "groq_vision_model": setting_get("groq_vision_model", DEFAULT_GROQ_VISION_MODEL).strip() or DEFAULT_GROQ_VISION_MODEL,
-            "gemini_api_key": setting_get("gemini_api_key", "").strip(),
+            "gemini_api_keys": gemini_keys,
+            "gemini_api_key": gemini_keys[0] if gemini_keys else "",
             "gemini_model": setting_get("gemini_model", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL,
             "ai_ocr_enabled": setting_get("ai_ocr_enabled", "0") == "1",
         }
@@ -75,12 +81,41 @@ def translation_config():
         return {
             "provider": "auto",
             "groq_api_key": "",
+            "groq_api_keys": [],
             "groq_model": DEFAULT_GROQ_MODEL,
             "groq_vision_model": DEFAULT_GROQ_VISION_MODEL,
             "gemini_api_key": "",
+            "gemini_api_keys": [],
             "gemini_model": DEFAULT_GEMINI_MODEL,
             "ai_ocr_enabled": False,
         }
+
+
+def parse_api_keys(value):
+    if isinstance(value, (list, tuple)):
+        candidates = value
+    else:
+        candidates = str(value or "").replace(",", "\n").replace(";", "\n").splitlines()
+    keys = []
+    for candidate in candidates:
+        key = str(candidate or "").strip()
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def rotated_api_keys(provider, config):
+    keys = configured_api_keys(provider, config)
+    if not keys:
+        return []
+    with _key_rotation_lock:
+        start = _key_rotation.get(provider, 0) % len(keys)
+        _key_rotation[provider] = (start + 1) % len(keys)
+    return keys[start:] + keys[:start]
+
+
+def configured_api_keys(provider, config):
+    return parse_api_keys(config.get(f"{provider}_api_keys") or config.get(f"{provider}_api_key") or "")
 
 
 def clear_translation_cache():
@@ -94,23 +129,25 @@ def test_translation_service():
     if provider == "free":
         return {"ok": False, "provider": "免费备用线路", "text": "", "error": "请选择 Groq、Google Gemini 或自动选择。"}
     if provider == "auto":
-        if config["gemini_api_key"]:
+        if configured_api_keys("gemini", config):
             provider = "gemini"
-        elif config["groq_api_key"]:
+        elif configured_api_keys("groq", config):
             provider = "groq"
         else:
             return {"ok": False, "provider": "自动选择", "text": "", "error": "尚未配置 Gemini 或 Groq API Key。"}
     try:
         sample = "Bonjour, ceci est un test de traduction OCR et audio."
         if provider == "gemini":
-            if not config["gemini_api_key"]:
+            keys = rotated_api_keys("gemini", config)
+            if not keys:
                 raise TranslateError("Gemini API Key 未配置")
-            text = translate_with_gemini(sample, config["gemini_api_key"], config["gemini_model"])
+            text = try_key_pool(keys, lambda key: translate_with_gemini(sample, key, config["gemini_model"]))
             label = "Google Gemini"
         else:
-            if not config["groq_api_key"]:
+            keys = rotated_api_keys("groq", config)
+            if not keys:
                 raise TranslateError("Groq API Key 未配置")
-            text = translate_with_groq(sample, config["groq_api_key"], config["groq_model"])
+            text = try_key_pool(keys, lambda key: translate_with_groq(sample, key, config["groq_model"]))
             label = "Groq"
         return {"ok": True, "provider": label, "text": text, "error": ""}
     except Exception as exc:
@@ -125,32 +162,30 @@ def ocr_image_with_ai(image_path):
     if provider == "free":
         return {"text": "", "error": "", "provider": ""}
     if provider == "auto":
-        if config["gemini_api_key"]:
+        if configured_api_keys("gemini", config):
             provider = "gemini"
-        elif config["groq_api_key"]:
+        elif configured_api_keys("groq", config):
             provider = "groq"
         else:
             return {"text": "", "error": "", "provider": ""}
     try:
         image_data, mime_type = encoded_image(image_path)
         if provider == "gemini":
-            if not config["gemini_api_key"]:
+            keys = rotated_api_keys("gemini", config)
+            if not keys:
                 raise TranslateError("Gemini API Key 未配置")
-            text = ocr_with_gemini(
-                image_data,
-                mime_type,
-                config["gemini_api_key"],
-                config["gemini_model"],
+            text = try_key_pool(
+                keys,
+                lambda key: ocr_with_gemini(image_data, mime_type, key, config["gemini_model"]),
             )
             label = "gemini"
         else:
-            if not config["groq_api_key"]:
+            keys = rotated_api_keys("groq", config)
+            if not keys:
                 raise TranslateError("Groq API Key 未配置")
-            text = ocr_with_groq(
-                image_data,
-                mime_type,
-                config["groq_api_key"],
-                config["groq_vision_model"],
+            text = try_key_pool(
+                keys,
+                lambda key: ocr_with_groq(image_data, mime_type, key, config["groq_vision_model"]),
             )
             label = "groq"
         return {"text": clean_ai_ocr_text(text), "error": "", "provider": label}
@@ -265,6 +300,8 @@ def translate_chunk(text, config=None):
         provider,
         config.get("groq_model") or "",
         config.get("gemini_model") or "",
+        len(configured_api_keys("groq", config)),
+        len(configured_api_keys("gemini", config)),
         str(text or ""),
     )
     with _translate_lock:
@@ -280,33 +317,34 @@ def translate_chunk(text, config=None):
         elif provider in {"gemini", "groq"}:
             ai_providers = [provider]
         for ai_provider in ai_providers:
-            api_key = str(config.get(f"{ai_provider}_api_key") or "").strip()
-            if not api_key:
+            api_keys = rotated_api_keys(ai_provider, config)
+            if not api_keys:
                 errors.append(f"{ai_provider}: API Key 未配置")
                 continue
-            try:
-                elapsed = time.monotonic() - _last_request_at
-                if elapsed < MIN_REQUEST_INTERVAL:
-                    time.sleep(MIN_REQUEST_INTERVAL - elapsed)
-                if ai_provider == "gemini":
-                    translated = translate_with_gemini(
-                        text,
-                        api_key,
-                        config.get("gemini_model") or DEFAULT_GEMINI_MODEL,
-                    )
-                else:
-                    translated = translate_with_groq(
-                        text,
-                        api_key,
-                        config.get("groq_model") or DEFAULT_GROQ_MODEL,
-                    )
-                _last_request_at = time.monotonic()
-                if translated:
-                    return remember_translation(cache_key, translated)
-                errors.append(f"{ai_provider}: empty translation result")
-            except Exception as exc:
-                _last_request_at = time.monotonic()
-                errors.append(f"{ai_provider}: {safe_api_error(exc)}")
+            for key_index, api_key in enumerate(api_keys, 1):
+                try:
+                    elapsed = time.monotonic() - _last_request_at
+                    if elapsed < MIN_REQUEST_INTERVAL:
+                        time.sleep(MIN_REQUEST_INTERVAL - elapsed)
+                    if ai_provider == "gemini":
+                        translated = translate_with_gemini(
+                            text,
+                            api_key,
+                            config.get("gemini_model") or DEFAULT_GEMINI_MODEL,
+                        )
+                    else:
+                        translated = translate_with_groq(
+                            text,
+                            api_key,
+                            config.get("groq_model") or DEFAULT_GROQ_MODEL,
+                        )
+                    _last_request_at = time.monotonic()
+                    if translated:
+                        return remember_translation(cache_key, translated)
+                    errors.append(f"{ai_provider} key#{key_index}: empty translation result")
+                except Exception as exc:
+                    _last_request_at = time.monotonic()
+                    errors.append(f"{ai_provider} key#{key_index}: {safe_api_error(exc)}")
 
         if time.monotonic() >= _google_cooldown_until:
             for attempt, endpoint in enumerate(GOOGLE_TRANSLATE_URLS):
@@ -358,7 +396,7 @@ def translate_chunk(text, config=None):
                     MYMEMORY_TRANSLATE_URL,
                     params={"q": piece, "langpair": "autodetect|zh-CN", "mt": "1"},
                     timeout=30,
-                    headers={"User-Agent": "FBPostCollector/1.4.5"},
+                    headers={"User-Agent": "FBPostCollector/1.4.6"},
                 )
                 _last_request_at = time.monotonic()
                 response.raise_for_status()
@@ -443,6 +481,16 @@ def safe_api_error(exc):
     if status:
         return f"HTTP {status}"
     return type(exc).__name__
+
+
+def try_key_pool(keys, operation):
+    errors = []
+    for index, key in enumerate(keys, 1):
+        try:
+            return operation(key)
+        except Exception as exc:
+            errors.append(f"key#{index}: {safe_api_error(exc)}")
+    raise TranslateError(" | ".join(errors) or "API Key 未配置")
 
 
 def remember_translation(key, translated):

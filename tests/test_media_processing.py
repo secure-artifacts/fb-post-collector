@@ -85,6 +85,43 @@ class TranslationTests(unittest.TestCase):
         translator._translation_cache.clear()
         translator._last_request_at = 0.0
         translator._google_cooldown_until = 0.0
+        translator._key_rotation = {"groq": 0, "gemini": 0}
+
+    def test_api_key_parser_accepts_lines_commas_and_deduplicates(self):
+        self.assertEqual(
+            translator.parse_api_keys("first\nsecond, first;third"),
+            ["first", "second", "third"],
+        )
+
+    def test_groq_key_pool_rotates_and_fails_over(self):
+        limited = MagicMock()
+        limited.status_code = 429
+        limited.raise_for_status.side_effect = requests.HTTPError(response=limited)
+        successful = MagicMock()
+        successful.raise_for_status.return_value = None
+        successful.json.return_value = {"choices": [{"message": {"content": "翻译成功"}}]}
+        config = {
+            "provider": "groq",
+            "groq_api_keys": ["key-one", "key-two"],
+            "groq_model": translator.DEFAULT_GROQ_MODEL,
+            "gemini_api_keys": [],
+            "gemini_model": translator.DEFAULT_GEMINI_MODEL,
+        }
+        with patch.object(translator.requests, "post", side_effect=[limited, successful]) as post, patch.object(
+            translator.time, "sleep"
+        ):
+            self.assertEqual(translator.translate_chunk("first request", config), "翻译成功")
+        authorizations = [call.kwargs["headers"]["Authorization"] for call in post.call_args_list]
+        self.assertEqual(authorizations, ["Bearer key-one", "Bearer key-two"])
+
+        successful_second_call = MagicMock()
+        successful_second_call.raise_for_status.return_value = None
+        successful_second_call.json.return_value = {"choices": [{"message": {"content": "第二次成功"}}]}
+        with patch.object(translator.requests, "post", return_value=successful_second_call) as post, patch.object(
+            translator.time, "sleep"
+        ):
+            self.assertEqual(translator.translate_chunk("second request", config), "第二次成功")
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer key-two")
 
     def test_429_is_retried_then_cached(self):
         limited = MagicMock()
