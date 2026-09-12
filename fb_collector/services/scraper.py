@@ -61,7 +61,7 @@ from .gyazo import upload_file
 from .ocr import ocr_image
 from .proc import run_hidden
 from .rate_limit import record_facebook_graphql_request, wait_for_facebook_graphql_slot
-from .translator import translate_to_chinese_detail
+from .translator import ocr_image_with_ai, translate_to_chinese_detail
 
 
 FACEBOOK_HOSTS = {"facebook.com", "www.facebook.com", "m.facebook.com", "fb.com", "fb.watch", "fb.me"}
@@ -834,6 +834,8 @@ class FacebookScraper:
             raw["ocr_status"] = values.get("ocr_status", "")
             raw["ocr_language"] = values.get("ocr_language", "")
             raw["ocr_error"] = values.get("ocr_error", "")
+            raw["ocr_engine"] = values.get("ocr_engine", "")
+            raw["ai_ocr_error"] = values.get("ai_ocr_error", "")
             raw["ocr_translate_error"] = values.get("ocr_translate_error", "")
             raw["post_translate_error"] = values.get("post_translate_error", "")
             raw["audio_translate_error"] = values.get("audio_translate_error", "")
@@ -883,6 +885,8 @@ class FacebookScraper:
             raw["ocr_status"] = values.get("ocr_status", "")
             raw["ocr_language"] = values.get("ocr_language", "")
             raw["ocr_error"] = values.get("ocr_error", "")
+            raw["ocr_engine"] = values.get("ocr_engine", "")
+            raw["ai_ocr_error"] = values.get("ai_ocr_error", "")
             raw["ocr_translate_error"] = values.get("ocr_translate_error", "")
             raw["post_translate_error"] = values.get("post_translate_error", "")
             raw["audio_translate_error"] = values.get("audio_translate_error", "")
@@ -1237,13 +1241,23 @@ class FacebookScraper:
         values["ocr_language"] = normalize_ocr_language(project.get("ocr_languages"))
         values["ocr_status"] = ""
         values["ocr_error"] = ""
-        try:
-            values["ocr_text"] = ocr_image(image_path, values["ocr_language"])
-            values["ocr_status"] = "success" if values["ocr_text"] else "success_empty"
-        except Exception as exc:
-            values["ocr_text"] = ""
-            values["ocr_status"] = "failed"
-            values["ocr_error"] = repr(exc)
+        values["ocr_text"] = ""
+        ai_result = ocr_image_with_ai(image_path)
+        values["ai_ocr_error"] = ai_result.get("error", "")
+        if ai_result.get("text"):
+            values["ocr_text"] = ai_result["text"]
+            values["ocr_engine"] = ai_result.get("provider") or "ai"
+            values["ocr_status"] = "ai_success"
+        else:
+            try:
+                values["ocr_text"] = ocr_image(image_path, values["ocr_language"])
+                values["ocr_status"] = "success" if values["ocr_text"] else "success_empty"
+                values["ocr_engine"] = "tesseract"
+            except Exception as exc:
+                values["ocr_text"] = ""
+                values["ocr_status"] = "failed"
+                values["ocr_error"] = repr(exc)
+                values["ocr_engine"] = "tesseract"
         if not values["ocr_text"]:
             values["ocr_text"] = clean_facebook_image_description(values.get("image_accessibility_text", ""))
             if values["ocr_text"]:

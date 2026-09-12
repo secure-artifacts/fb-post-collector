@@ -42,6 +42,12 @@
         </select>
       </label>
       <div class="col-md-8"></div>
+      <div class="col-12">
+        <label class="form-check-label">
+          <input class="form-check-input me-1" type="checkbox" name="ai_ocr_enabled" value="1" {% if ai_ocr_enabled %}checked{% endif %}>
+          优先使用所选 AI 进行视觉 OCR（会消耗 API 用量；AI 失败时自动回退 Tesseract）
+        </label>
+      </div>
 
       <label class="col-md-4 form-label">Google Gemini API Key
         <input class="form-control form-control-sm mt-1" type="password" name="gemini_api_key"
@@ -65,7 +71,10 @@
       <label class="col-md-4 form-label">Groq 模型
         <input class="form-control form-control-sm mt-1" name="groq_model" value="{{ groq_model }}">
       </label>
-      <label class="col-md-4 form-label pt-md-4">
+      <label class="col-md-4 form-label">Groq 视觉 OCR 模型
+        <input class="form-control form-control-sm mt-1" name="groq_vision_model" value="{{ groq_vision_model }}">
+      </label>
+      <label class="col-md-4 form-label">
         <input class="form-check-input" type="checkbox" name="clear_groq_api_key" value="1"> 清除 Groq 密钥
       </label>
 

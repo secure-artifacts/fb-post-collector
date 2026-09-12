@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -33,6 +34,40 @@ class OcrTests(unittest.TestCase):
         self.assertEqual(recognize.call_count, 2)
         self.assertIn("--psm 6", recognize.call_args_list[0].kwargs["config"])
         self.assertIn("--psm 11", recognize.call_args_list[1].kwargs["config"])
+
+    def test_tessdata_path_with_spaces_uses_environment_not_quoted_argument(self):
+        with tempfile.TemporaryDirectory(prefix="ocr path with spaces ") as directory:
+            root = Path(directory)
+            (root / "por.traineddata").write_bytes(b"test")
+            image_path = root / "image.png"
+            Image.new("RGB", (200, 80), "white").save(image_path)
+            tools = {
+                "tesseract": {"available": True, "path": "tesseract"},
+                "tessdata_dirs": [str(root)],
+            }
+
+            def recognize(*args, **kwargs):
+                self.assertEqual(os.environ.get("TESSDATA_PREFIX"), str(root))
+                self.assertNotIn("tessdata-dir", kwargs["config"])
+                return "texto reconhecido suficiente"
+
+            with patch.object(ocr, "detect_tools", return_value=tools), patch.object(
+                ocr.pytesseract, "image_to_string", side_effect=recognize
+            ):
+                self.assertEqual(ocr.ocr_image(image_path, "por"), "texto reconhecido suficiente")
+
+    def test_enabled_ai_vision_ocr_is_preferred_over_tesseract(self):
+        scraper = FacebookScraper()
+        values = {"image_accessibility_text": ""}
+        with patch("fb_collector.services.scraper.ocr_image") as local_ocr, patch(
+            "fb_collector.services.scraper.ocr_image_with_ai",
+            return_value={"text": "Texto visível", "error": "", "provider": "gemini"},
+        ), patch("fb_collector.services.scraper.translate_field"):
+            scraper.apply_ocr_to_local_media(Path("image.jpg"), {"ocr_languages": "por"}, values)
+        self.assertEqual(values["ocr_text"], "Texto visível")
+        self.assertEqual(values["ocr_status"], "ai_success")
+        self.assertEqual(values["ocr_engine"], "gemini")
+        local_ocr.assert_not_called()
 
     def test_video_frame_is_sent_to_ocr(self):
         scraper = FacebookScraper()
@@ -122,6 +157,18 @@ class TranslationTests(unittest.TestCase):
             self.assertEqual(translator.translate_chunk("audio text", config), "音频中的文字")
         self.assertIn("gemini-3.8-flash:generateContent", post.call_args.args[0])
         self.assertEqual(post.call_args.kwargs["headers"]["x-goog-api-key"], "gemini-secret")
+
+    def test_gemini_vision_ocr_sends_inline_image(self):
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": "Texte dans l’image"}]}}]
+        }
+        with patch.object(translator.requests, "post", return_value=response) as post:
+            result = translator.ocr_with_gemini("YWJj", "image/jpeg", "gemini-secret")
+        self.assertEqual(result, "Texte dans l’image")
+        inline = post.call_args.kwargs["json"]["contents"][0]["parts"][0]["inline_data"]
+        self.assertEqual(inline, {"mime_type": "image/jpeg", "data": "YWJj"})
 
 
 class GroupPostTargetingTests(unittest.TestCase):

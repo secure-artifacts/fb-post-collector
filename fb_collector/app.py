@@ -26,6 +26,7 @@ from .services.sheets import clear_google_oauth, extract_spreadsheet_id, google_
 from .services.translator import (
     DEFAULT_GEMINI_MODEL,
     DEFAULT_GROQ_MODEL,
+    DEFAULT_GROQ_VISION_MODEL,
     clear_translation_cache,
     test_translation_service,
 )
@@ -427,7 +428,9 @@ def create_app():
                     provider = "auto"
                 db.setting_set("translation_provider", provider)
                 db.setting_set("groq_model", request.form.get("groq_model", "").strip() or DEFAULT_GROQ_MODEL)
+                db.setting_set("groq_vision_model", request.form.get("groq_vision_model", "").strip() or DEFAULT_GROQ_VISION_MODEL)
                 db.setting_set("gemini_model", request.form.get("gemini_model", "").strip() or DEFAULT_GEMINI_MODEL)
+                db.setting_set("ai_ocr_enabled", "1" if request.form.get("ai_ocr_enabled") == "1" else "0")
                 for key_name in ("groq_api_key", "gemini_api_key"):
                     if request.form.get(f"clear_{key_name}") == "1":
                         db.setting_set(key_name, "")
@@ -451,7 +454,9 @@ def create_app():
             groq_key_configured=bool(db.setting_get("groq_api_key")),
             gemini_key_configured=bool(db.setting_get("gemini_api_key")),
             groq_model=db.setting_get("groq_model", DEFAULT_GROQ_MODEL),
+            groq_vision_model=db.setting_get("groq_vision_model", DEFAULT_GROQ_VISION_MODEL),
             gemini_model=db.setting_get("gemini_model", DEFAULT_GEMINI_MODEL),
+            ai_ocr_enabled=db.setting_get("ai_ocr_enabled", "0") == "1",
         )
 
     @app.context_processor

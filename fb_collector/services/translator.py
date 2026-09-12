@@ -1,6 +1,9 @@
+import base64
+import mimetypes
 import time
 import threading
 from collections import OrderedDict
+from pathlib import Path
 
 import requests
 
@@ -21,6 +24,7 @@ GOOGLE_COOLDOWN_SECONDS = 600
 GROQ_TRANSLATE_URL = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_TRANSLATE_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
+DEFAULT_GROQ_VISION_MODEL = "qwen/qwen3.6-27b"
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 _translate_lock = threading.Lock()
 _translation_cache = OrderedDict()
@@ -62,16 +66,20 @@ def translation_config():
             "provider": provider if provider in {"auto", "groq", "gemini", "free"} else "auto",
             "groq_api_key": setting_get("groq_api_key", "").strip(),
             "groq_model": setting_get("groq_model", DEFAULT_GROQ_MODEL).strip() or DEFAULT_GROQ_MODEL,
+            "groq_vision_model": setting_get("groq_vision_model", DEFAULT_GROQ_VISION_MODEL).strip() or DEFAULT_GROQ_VISION_MODEL,
             "gemini_api_key": setting_get("gemini_api_key", "").strip(),
             "gemini_model": setting_get("gemini_model", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL,
+            "ai_ocr_enabled": setting_get("ai_ocr_enabled", "0") == "1",
         }
     except Exception:
         return {
             "provider": "auto",
             "groq_api_key": "",
             "groq_model": DEFAULT_GROQ_MODEL,
+            "groq_vision_model": DEFAULT_GROQ_VISION_MODEL,
             "gemini_api_key": "",
             "gemini_model": DEFAULT_GEMINI_MODEL,
+            "ai_ocr_enabled": False,
         }
 
 
@@ -107,6 +115,120 @@ def test_translation_service():
         return {"ok": True, "provider": label, "text": text, "error": ""}
     except Exception as exc:
         return {"ok": False, "provider": provider, "text": "", "error": safe_api_error(exc)}
+
+
+def ocr_image_with_ai(image_path):
+    config = translation_config()
+    if not config.get("ai_ocr_enabled"):
+        return {"text": "", "error": "", "provider": ""}
+    provider = config["provider"]
+    if provider == "free":
+        return {"text": "", "error": "", "provider": ""}
+    if provider == "auto":
+        if config["gemini_api_key"]:
+            provider = "gemini"
+        elif config["groq_api_key"]:
+            provider = "groq"
+        else:
+            return {"text": "", "error": "", "provider": ""}
+    try:
+        image_data, mime_type = encoded_image(image_path)
+        if provider == "gemini":
+            if not config["gemini_api_key"]:
+                raise TranslateError("Gemini API Key 未配置")
+            text = ocr_with_gemini(
+                image_data,
+                mime_type,
+                config["gemini_api_key"],
+                config["gemini_model"],
+            )
+            label = "gemini"
+        else:
+            if not config["groq_api_key"]:
+                raise TranslateError("Groq API Key 未配置")
+            text = ocr_with_groq(
+                image_data,
+                mime_type,
+                config["groq_api_key"],
+                config["groq_vision_model"],
+            )
+            label = "groq"
+        return {"text": clean_ai_ocr_text(text), "error": "", "provider": label}
+    except Exception as exc:
+        return {"text": "", "error": safe_api_error(exc), "provider": provider}
+
+
+def encoded_image(image_path):
+    path = Path(image_path)
+    data = path.read_bytes()
+    if len(data) > 15 * 1024 * 1024:
+        raise TranslateError("图片超过 AI OCR 的 15MB 限制")
+    mime_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
+    if mime_type == "image/jpg":
+        mime_type = "image/jpeg"
+    return base64.b64encode(data).decode("ascii"), mime_type
+
+
+def ocr_with_gemini(image_data, mime_type, api_key, model=DEFAULT_GEMINI_MODEL):
+    model = validate_model_name(model, DEFAULT_GEMINI_MODEL)
+    response = requests.post(
+        GEMINI_TRANSLATE_URL.format(model=model),
+        headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+        json={
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"inline_data": {"mime_type": mime_type, "data": image_data}},
+                        {"text": "Extract every visible word from this image exactly in its original language. Preserve line breaks. Do not translate or describe the image. Return [NO_TEXT] only when there is no visible text."},
+                    ],
+                }
+            ],
+            "generationConfig": {"temperature": 0, "maxOutputTokens": 4096},
+        },
+        timeout=90,
+    )
+    response.raise_for_status()
+    data = response.json()
+    candidates = data.get("candidates") or []
+    parts = (((candidates[0] if candidates else {}).get("content") or {}).get("parts") or [])
+    return "".join(str(part.get("text") or "") for part in parts if isinstance(part, dict)).strip()
+
+
+def ocr_with_groq(image_data, mime_type, api_key, model=DEFAULT_GROQ_VISION_MODEL):
+    response = requests.post(
+        GROQ_TRANSLATE_URL,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={
+            "model": validate_model_name(model, DEFAULT_GROQ_VISION_MODEL, allow_slash=True),
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Extract every visible word from this image exactly in its original language. Preserve line breaks. Do not translate or describe the image. Return [NO_TEXT] only when there is no visible text."},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_data}"}},
+                    ],
+                }
+            ],
+            "temperature": 0,
+            "max_completion_tokens": 4096,
+        },
+        timeout=90,
+    )
+    response.raise_for_status()
+    data = response.json()
+    return str((((data.get("choices") or [{}])[0].get("message") or {}).get("content")) or "").strip()
+
+
+def clean_ai_ocr_text(text):
+    value = str(text or "").strip()
+    if value.upper() in {"[NO_TEXT]", "NO_TEXT", "NO TEXT"}:
+        return ""
+    if value.startswith("```") and value.endswith("```"):
+        value = value[3:-3].strip()
+        if value.lower().startswith("text\n"):
+            value = value[5:]
+    return value.strip()
 
 
 def split_text(text):
